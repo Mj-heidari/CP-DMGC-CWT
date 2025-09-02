@@ -4,7 +4,7 @@ Cross‑Patient Seizure Prediction via Dynamic Multi‑Graph Convolution and Cha
 ## Quick start
 
 ```bash
-git clone https://github.com/<YOUR_USER>/CP-DMGC-CWT.git
+git clone https://github.com/Mj-Heidari/CP-DMGC-CWT.git
 cd CP-DMGC-CWT
 python -m venv .venv
 # Windows: .venv\Scripts\activate
