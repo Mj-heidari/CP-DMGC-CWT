@@ -1,4 +1,4 @@
-from preprocessing import preprocess_chbmit, add_seizure_annotations, extract_segments_with_labels, convert_to_preactal_interactal
+from utils import preprocess_chbmit, add_seizure_annotations, extract_segments_with_labels, convert_to_preactal_interactal
 import os
 import mne
 import numpy as np
