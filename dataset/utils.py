@@ -3,13 +3,11 @@ import mne
 from mne.preprocessing import ICA
 from typing import Tuple, List
 import re
+import pandas as pd
 
 
 def preprocess_chbmit(
-    raw: mne.io.Raw,
-    sfreq_new: int = 128,
-    l_freq: float = 0.5,
-    h_freq: float = 40.0
+    raw: mne.io.Raw, sfreq_new: int = 128, l_freq: float = 0.5, h_freq: float = 40.0
 ) -> Tuple[np.ndarray, List[str], int]:
     """
     Preprocessing pipeline for CHB-MIT EEG dataset.
@@ -64,7 +62,8 @@ def preprocess_chbmit(
 
         # Proxy blink detection via frontal channels
         proxy_candidates = [
-            ch for ch in ["FP1-F7", "FP1-F3", "FP2-F4", "FP2-F8"] 
+            ch
+            for ch in ["FP1-F7", "FP1-F3", "FP2-F4", "FP2-F8"]
             if ch in raw_proc.ch_names
         ]
         for ch in proxy_candidates:
@@ -88,7 +87,7 @@ def preprocess_chbmit(
 
     except Exception as e:
         raise RuntimeError(f"Preprocessing failed: {str(e)}")
-    
+
 
 def add_seizure_annotations(raw: mne.io.Raw, summary_txt: str) -> mne.io.Raw:
     """
@@ -107,7 +106,9 @@ def add_seizure_annotations(raw: mne.io.Raw, summary_txt: str) -> mne.io.Raw:
         Raw object with MNE Annotations added for seizures.
     """
     # Extract the current EDF filename
-    raw_fname = str(raw.filenames[0]).split("/")[-1].split("\\")[-1]  # handle Windows/Unix paths
+    raw_fname = (
+        str(raw.filenames[0]).split("/")[-1].split("\\")[-1]
+    )  # handle Windows/Unix paths
 
     seizures = []
 
@@ -121,8 +122,14 @@ def add_seizure_annotations(raw: mne.io.Raw, summary_txt: str) -> mne.io.Raw:
             continue
 
         # flexible regex to handle files with or without seizure numbers
-        starts = [int(m.group(1)) for m in re.finditer(r"Seizure(?: \d+)? Start Time: (\d+)", file_block)]
-        ends   = [int(m.group(1)) for m in re.finditer(r"Seizure(?: \d+)? End Time: (\d+)", file_block)]
+        starts = [
+            int(m.group(1))
+            for m in re.finditer(r"Seizure(?: \d+)? Start Time: (\d+)", file_block)
+        ]
+        ends = [
+            int(m.group(1))
+            for m in re.finditer(r"Seizure(?: \d+)? End Time: (\d+)", file_block)
+        ]
 
         seizures = list(zip(starts, ends))
         break
@@ -135,18 +142,65 @@ def add_seizure_annotations(raw: mne.io.Raw, summary_txt: str) -> mne.io.Raw:
     onsets = [s[0] for s in seizures]
     durations = [s[1] - s[0] for s in seizures]
     descriptions = ["seizure"] * len(seizures)
-    
-    annotations = mne.Annotations(onset=onsets,
-                                  duration=durations,
-                                  description=descriptions)
-    
+
+    annotations = mne.Annotations(
+        onset=onsets, duration=durations, description=descriptions
+    )
+
     raw.set_annotations(annotations)
     print(f"Added {len(seizures)} seizure annotations to {raw_fname}")
     return raw
 
-def extract_segments_with_labels(raw: mne.io.Raw,
-                                 segment_sec: float = 5.0,
-                                 seizure_threshold: float = 0.6) -> Tuple[np.ndarray, np.ndarray]:
+
+def add_seizure_annotations_bids(
+    raw: mne.io.Raw, annotations_df: pd.DataFrame
+) -> mne.io.Raw:
+    """
+    Add seizure annotations to a Raw object based on provided seizure times.
+
+    Parameters
+    ----------
+    raw : mne.io.Raw
+        Raw EEG object.
+    seizure_times : List[Tuple[float, float]]
+        List of tuples with (start_time, end_time) in seconds.
+
+    Returns
+    -------
+    raw : mne.io.Raw
+        Raw object with MNE Annotations added for seizures.
+    """
+    if not annotations_df.shape[0]:
+        print("No seizures provided.")
+        return raw
+
+    onsets = [
+        start
+        for start, event_type in zip(
+            annotations_df["onset"], annotations_df["eventType"]
+        )
+        if event_type == "sz"
+    ]
+    durations = [
+        duration
+        for duration, event_type in zip(
+            annotations_df["duration"], annotations_df["eventType"]
+        )
+        if event_type == "sz"
+    ]
+
+    descriptions = ["seizure"] * len(onsets)
+    if len(onsets) > 0:
+        annotations = mne.Annotations(
+            onset=onsets, duration=durations, description=descriptions
+        )
+        raw.set_annotations(annotations)
+    return raw
+
+
+def extract_segments_with_labels(
+    raw: mne.io.Raw, segment_sec: float = 5.0, seizure_threshold: float = 0.6
+) -> Tuple[np.ndarray, np.ndarray]:
     """
     Extract fixed-length segments from a Raw object and assign seizure/non-seizure labels.
 
@@ -166,9 +220,9 @@ def extract_segments_with_labels(raw: mne.io.Raw,
     y : np.ndarray
         Labels array of shape (n_segments,), 1=seizure, 0=non-seizure.
     """
-    sfreq = raw.info['sfreq']
+    sfreq = raw.info["sfreq"]
     n_samples_per_segment = int(segment_sec * sfreq)
-    n_channels = raw.info['nchan']
+    n_channels = raw.info["nchan"]
 
     data = raw.get_data()  # shape: (n_channels, n_times)
     n_total_samples = data.shape[1]
@@ -177,9 +231,9 @@ def extract_segments_with_labels(raw: mne.io.Raw,
     seizure_mask = np.zeros(n_total_samples, dtype=int)
     if raw.annotations is not None:
         for annot in raw.annotations:
-            if annot['description'].lower() == 'seizure':
-                start_sample = int(annot['onset'] * sfreq)
-                end_sample = int((annot['onset'] + annot['duration']) * sfreq)
+            if annot["description"].lower() == "seizure":
+                start_sample = int(annot["onset"] * sfreq)
+                end_sample = int((annot["onset"] + annot["duration"]) * sfreq)
                 seizure_mask[start_sample:end_sample] = 1
 
     segments = []
@@ -192,29 +246,188 @@ def extract_segments_with_labels(raw: mne.io.Raw,
             break  # discard last incomplete segment
 
         segment = data[:, start:end]
-        segment_label = 1 if seizure_mask[start:end].sum() >= seizure_threshold * n_samples_per_segment else 0
+        segment_label = (
+            1
+            if seizure_mask[start:end].sum()
+            >= seizure_threshold * n_samples_per_segment
+            else 0
+        )
 
         segments.append(segment)
         labels.append(segment_label)
 
-    X = np.stack(segments)          # shape: (n_segments, n_channels, n_samples)
-    y = np.array(labels)            # shape: (n_segments,)
+    X = np.stack(segments)  # shape: (n_segments, n_channels, n_samples)
+    y = np.array(labels)  # shape: (n_segments,)
 
     return X, y
 
 
+def infer_preictal_interactal(raw: mne.io.Raw) -> mne.io.Raw:
+    """
+    Infer preictal and interictal periods in the Raw object based on seizure annotations.
 
-def convert_to_preactal_interactal(X,y):
+    Parameters
+    ----------
+    raw : mne.io.Raw
+        Raw EEG with seizure annotations.
+
+    Returns
+    -------
+    raw : mne.io.Raw
+        Raw EEG with updated annotations for preictal and interictal periods.
+    """
+    if raw.annotations is None or len(raw.annotations) == 0:
+        print("No seizures to infer preictal/interictal periods.")
+        return raw
+
+    sfreq = raw.info["sfreq"]
+    total_duration = raw.times[-1]
+
+    new_annotations = []
+
+    seizure_onsets = [
+        annot["onset"]
+        for annot in raw.annotations
+        if annot["description"].lower() == "seizure"
+    ]
+    seizure_offsets = [
+        annot["onset"] + annot["duration"]
+        for annot in raw.annotations
+        if annot["description"].lower() == "seizure"
+    ]
+
+    for onset, offset in zip(seizure_onsets, seizure_offsets):
+        # mark 120 mins after offset as excluded
+        exclude_start = offset
+        ends = [start for start in seizure_onsets if start - offset > 0] + [
+            offset + 120 * 60,
+            total_duration,
+        ]
+        exclude_end = min(ends)
+        new_annotations.append(
+            {
+                "onset": exclude_start,
+                "duration": exclude_end - exclude_start,
+                "description": "excluded",
+            }
+        )
+
+    for i, onset in enumerate(seizure_onsets):
+        # mark 15 mins before onset as preictal if the period is not excluded
+        preictal_start = max(0, onset - 15 * 60)
+        preictal_end = onset
+
+        if not any(
+            [
+                annot["onset"] < preictal_end - 1 < annot["onset"] + annot["duration"]
+                for annot in new_annotations
+                if annot["description"] == "excluded"
+            ]
+        ):
+            new_annot = {
+                "duration": preictal_end - preictal_start,
+                "onset": preictal_start,
+            }
+            for annot in new_annotations:
+                if annot["onset"] < preictal_start < annot["onset"] + annot["duration"]:
+                    print("here")
+                    new_annot["duration"] = preictal_end - (
+                        annot["onset"] + annot["duration"]
+                    )
+                    new_annot["onset"] = annot["onset"] + annot["duration"]
+
+            new_annotations.append(
+                {
+                    "onset": new_annot["onset"],
+                    "duration": new_annot["duration"],
+                    "description": "preictal",
+                }
+            )
+
+    # mark 105 before each preictal as excluded
+    preictal_onsets = [
+        annot["onset"]
+        for annot in new_annotations
+        if annot["description"] == "preictal"
+    ]
+    for pre_onset in preictal_onsets:
+        exclude_start = max(0, pre_onset - 105 * 60)
+        exclude_end = pre_onset
+        flag = True
+        for new_annot in new_annotations:
+            if new_annot["description"] == "excluded" and (
+                new_annot["onset"]
+                < exclude_start
+                < new_annot["onset"] + new_annot["duration"]
+            ):
+                new_annot["duration"] = pre_onset - new_annot["onset"]
+                flag = False
+
+        if flag:
+            new_annotations.append(
+                {
+                    "onset": exclude_start,
+                    "duration": exclude_end - exclude_start,
+                    "description": "excluded",
+                }
+            )
+
+    # mark all other times as interictal
+    all_annot_intervals = [
+        (annot["onset"], annot["onset"] + annot["duration"])
+        for annot in new_annotations
+        if (
+            annot["description"] != "BAD boundary"
+            and annot["description"] != "EDGE boundary"
+        )
+    ] + [
+        (annot["onset"], annot["onset"] + annot["duration"])
+        for annot in raw.annotations
+        if annot["description"].lower() == "seizure"
+    ]
+
+    all_annot_intervals.sort(key=lambda x: x[0])  # sort by onset time
+    print(all_annot_intervals)
+    current_time = 0.0
+    for start, end in all_annot_intervals:
+        if current_time < start:
+            new_annotations.append(
+                {
+                    "onset": current_time,
+                    "duration": start - current_time,
+                    "description": "interictal",
+                }
+            )
+        current_time = max(current_time, end)
+    if current_time < total_duration:
+        new_annotations.append(
+            {
+                "onset": current_time,
+                "duration": total_duration - current_time,
+                "description": "interictal",
+            }
+        )
+
+    raw.annotations.append(
+        onset=[annot["onset"] for annot in new_annotations],
+        duration=[annot["duration"] for annot in new_annotations],
+        description=[annot["description"] for annot in new_annotations],
+    )
+
+    return raw
+
+
+def convert_to_preactal_interactal(X, y):
     new_y = np.zeros_like(y)
-    while len(np.where(y==1)[0]) >0:
-        start_idx = np.where(y==1)[0][0]
-        end_idx = np.where(y==1)[0][0] + int(3600 * 2 / 5) 
+    while len(np.where(y == 1)[0]) > 0:
+        start_idx = np.where(y == 1)[0][0]
+        end_idx = np.where(y == 1)[0][0] + int(3600 * 2 / 5)
 
         X = np.delete(X, np.s_[start_idx:end_idx], axis=0)
         y = np.delete(y, np.s_[start_idx:end_idx], axis=0)
         new_y = np.delete(new_y, np.s_[start_idx:end_idx], axis=0)
-        
-        new_y[start_idx - int(15 * 60 / 5): start_idx] = 1
+
+        new_y[start_idx - int(15 * 60 / 5) : start_idx] = 1
 
         end_idx = start_idx - int(15 * 60 / 5)
         start_idx = start_idx - int(120 * 60 / 5)
@@ -224,6 +437,6 @@ def convert_to_preactal_interactal(X,y):
 
         X = np.delete(X, np.s_[start_idx:end_idx], axis=0)
         y = np.delete(y, np.s_[start_idx:end_idx], axis=0)
-        new_y = np.delete(new_y, np.s_[start_idx:end_idx], axis=0)        
+        new_y = np.delete(new_y, np.s_[start_idx:end_idx], axis=0)
 
     return X, new_y
