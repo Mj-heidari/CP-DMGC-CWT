@@ -1,7 +1,7 @@
 import numpy as np
 import mne
 from mne.preprocessing import ICA
-from typing import Tuple, List
+from typing import Tuple, List, Set
 import re
 import pandas as pd
 
@@ -416,6 +416,76 @@ def infer_preictal_interactal(raw: mne.io.Raw) -> mne.io.Raw:
 
     return raw
 
+
+
+def extract_segments_with_labels_bids(
+    raw: mne.io.Raw,
+    segment_sec: float = 5.0,
+    overlap: float = 0.0,
+    keep_labels: Set[str] = {"preictal", "interictal"},
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Segment EEG into fixed-length epochs based on annotations.
+
+    Parameters
+    ----------
+    raw : mne.io.Raw
+        Continuous EEG recording with annotations.
+    segment_sec : float
+        Length of each segment in seconds.
+    overlap : float
+        Overlap between consecutive segments in seconds.
+    keep_labels : set of str
+        Annotation descriptions to keep (e.g., {"preictal", "interictal"}).
+
+    Returns
+    -------
+    X : np.ndarray, shape (n_epochs, n_channels, n_times)
+        Segmented EEG data.
+    y : np.ndarray, shape (n_epochs,)
+        Labels corresponding to each segment (e.g., "preictal", "interictal").
+    group_ids : np.ndarray, shape (n_epochs,)
+        IDs for the original annotation interval each segment came from.
+        Useful for splitting train/test at the subject or event level.
+    """
+    X, y, group_ids = [], [], []
+    ann_counter = {lab: 0 for lab in keep_labels}  # counter for each label
+
+    for idx, (desc, onset, duration) in enumerate(
+        zip(raw.annotations.description,
+            raw.annotations.onset,
+            raw.annotations.duration)
+    ):
+        if desc not in keep_labels:
+            continue
+
+        # Segment only within this annotation
+        segment_raw = raw.copy().crop(tmin=onset, tmax=onset + duration)
+        epochs = mne.make_fixed_length_epochs(
+            segment_raw,
+            duration=segment_sec,
+            overlap=overlap,
+            preload=True,
+            reject_by_annotation=True  # ensures BAD/EDGE are dropped
+        )
+
+        # Assign group ID for this block (useful for CV splitting later)
+        ann_counter[desc] += 1
+        block_id = f"{desc}_{ann_counter[desc]}"
+
+        # Collect
+        X.append(epochs.get_data())
+        y.extend([desc] * len(epochs))
+        group_ids.extend([block_id] * len(epochs))
+
+    if not X:
+        return np.empty((0,)), np.empty((0,)), np.empty((0,))
+
+    X = np.concatenate(X, axis=0)
+    y = np.array(y)
+    group_ids = np.array(group_ids)
+
+    return X, y, group_ids
 
 def convert_to_preactal_interactal(X, y):
     new_y = np.zeros_like(y)

@@ -5,14 +5,15 @@ from utils import (
     convert_to_preactal_interactal,
     add_seizure_annotations_bids,
     infer_preictal_interactal,
+    extract_segments_with_labels_bids,
 )
 import os
 import mne
 import numpy as np
 import glob
 import pandas as pd
-import json
 import matplotlib.pyplot as plt
+from collections import Counter
 
 
 def process_chbmit_dataset(dataset_dir: str, output_dir: str):
@@ -93,33 +94,52 @@ def process_chbmit_bids_dataset(dataset_dir: str, output_dir: str):
     """
 
     os.makedirs(output_dir, exist_ok=True)
-
-    for subj in sorted(os.listdir(dataset_dir))[1:]:
-        subj_path = os.path.join(dataset_dir, subj)
-        if not os.path.isdir(subj_path):
-            continue
-        edf_files = sorted(glob.glob(subj_path + "/ses-01/eeg/*.edf"))
+    sessions_pathes = glob.glob("./data/BIDS_CHB-MIT/*/*")
+    for session_path in sorted(sessions_pathes):
+        edf_files = sorted(glob.glob(session_path + "/eeg/*.edf"))
         raws = []
-        for i, raw_file_path in enumerate(edf_files):
+        for raw_file_path in edf_files:
             annotation_file_path = raw_file_path.replace("_eeg.edf", "_events.tsv")
-            metadata_file_path = raw_file_path.replace("_eeg.edf", "_eeg.json")
 
             raw = mne.io.read_raw_edf(raw_file_path, preload=True)
             annotations = pd.read_csv(annotation_file_path, sep="\t")
-            metadata = json.load(open(metadata_file_path))
 
             raw = add_seizure_annotations_bids(raw, annotations)
 
             # raw = preprocess_chbmit(raw)
 
             raws.append(raw)
-            if i == 25:
-                break
 
         raw_all = mne.concatenate_raws(raws)
         raw_all = infer_preictal_interactal(raw_all)
-        raw_all.plot(scalings="auto", duration=30)
-        plt.show()
+
+        # plot the annotation
+        # raw_all.plot(scalings="auto", duration=30)
+        # plt.show()
+
+        X, y, group_ids = extract_segments_with_labels_bids(
+            raw_all, segment_sec=5, overlap=0.0, keep_labels={"preictal", "interictal"}
+        )
+
+        # --- Print statistics ---
+        print("\n=== Extraction statistics ===")
+        print(f"Total segments: {len(y)}")
+        counts = Counter(y)
+        for label, cnt in counts.items():
+            print(f"  {label}: {cnt}")
+        group_counts = Counter(group_ids)
+        print(f"Groups extracted: {len(group_counts)}")
+        for gid, cnt in group_counts.items():
+            print(f"  {gid}: {cnt} segments")
+        print("=============================\n")
+
+        # Convert to float32 before saving
+        X = X.astype(np.float32)
+
+        np.savez_compressed(
+            session_path + "/eeg/processed_segments.npz", X=X, y=y, group_ids=group_ids
+        )
+
         break
 
 
