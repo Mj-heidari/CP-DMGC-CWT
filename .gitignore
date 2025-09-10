@@ -15,6 +15,7 @@ venv/
 
 # Data (keep small samples only)
 data/
+dataset/output/
 *.npz
 *.zip
 *.tar.gz
