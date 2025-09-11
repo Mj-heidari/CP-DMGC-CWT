@@ -223,6 +223,17 @@ def infer_preictal_interactal(raw: mne.io.Raw, dynamic_preictal: bool = False, S
                 }
             )
 
+
+            # exclude the SPE gap
+            if SPE > 0 and preictal_end < onset:
+                new_annotations.append(
+                    {
+                        "onset": preictal_end,
+                        "duration": onset - preictal_end,
+                        "description": "excluded",
+                    }
+                )
+
     # mark 105 before each preictal as excluded
     preictal_onsets = [
         annot["onset"]
