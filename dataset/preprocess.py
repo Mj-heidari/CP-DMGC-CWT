@@ -33,7 +33,7 @@ def process_chbmit_bids_dataset(
         Default is True.
     """
 
-    sessions_pathes = glob.glob(os.path.join(dataset_dir, "/*/*"))
+    sessions_pathes = glob.glob(os.path.join(dataset_dir, "*", "*"))
     for session_path in sorted(sessions_pathes):
         edf_files = sorted(glob.glob(session_path + "/eeg/*.edf"))
         raws = []
@@ -93,10 +93,6 @@ def process_chbmit_bids_dataset(
                 y=y,
                 group_ids=group_ids,
             )
-
-
-        break
-
 
 if __name__ == "__main__":
     dataset_dir = "data/BIDS_CHB-MIT"
