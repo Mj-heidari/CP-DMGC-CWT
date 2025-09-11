@@ -135,7 +135,7 @@ def add_seizure_annotations_bids(
         raw.set_annotations(annotations)
     return raw
 
-def infer_preictal_interactal(raw: mne.io.Raw) -> mne.io.Raw:
+def infer_preictal_interactal(raw: mne.io.Raw, dynamic_preictal: bool = False) -> mne.io.Raw:
     """
     Infer preictal and interictal periods in the Raw object based on seizure annotations.
 
@@ -201,13 +201,13 @@ def infer_preictal_interactal(raw: mne.io.Raw) -> mne.io.Raw:
                 "duration": preictal_end - preictal_start,
                 "onset": preictal_start,
             }
-            for annot in new_annotations:
-                if annot["onset"] < preictal_start < annot["onset"] + annot["duration"]:
-                    print("here")
-                    new_annot["duration"] = preictal_end - (
-                        annot["onset"] + annot["duration"]
-                    )
-                    new_annot["onset"] = annot["onset"] + annot["duration"]
+            if dynamic_preictal:
+                for annot in new_annotations:
+                    if annot["onset"] < preictal_start < annot["onset"] + annot["duration"]:
+                        new_annot["duration"] = preictal_end - (
+                            annot["onset"] + annot["duration"]
+                        )
+                        new_annot["onset"] = annot["onset"] + annot["duration"]
 
             new_annotations.append(
                 {
