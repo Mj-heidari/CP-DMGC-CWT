@@ -9,7 +9,13 @@ from collections import Counter
 
 
 
-def process_chbmit_bids_dataset(dataset_dir: str, output_dir: str, save_uint16: bool = True):
+def process_chbmit_bids_dataset(
+    dataset_dir: str,
+    output_dir: str,
+    save_uint16: bool = False,
+    plot: bool = False,
+    show_statistics: bool = True,
+):
     """
     Process all subjects in CHB-MIT (BIDS format) dataset and save per-subject segments and labels.
 
@@ -22,6 +28,12 @@ def process_chbmit_bids_dataset(dataset_dir: str, output_dir: str, save_uint16: 
     save_uint16 : bool, optional
         If True, saves EEG data scaled to uint16 with per-sample min/max for reconstruction.
         Default is False (save as float32).
+    plot : bool, optional
+        If True, plot raw data with annotations before segmentation.
+        Default is False.
+    show_statistics : bool, optional
+        If True, print extraction statistics (segments, labels, groups).
+        Default is True.
     """
 
     os.makedirs(output_dir, exist_ok=True)
@@ -44,28 +56,29 @@ def process_chbmit_bids_dataset(dataset_dir: str, output_dir: str, save_uint16: 
         raw_all = mne.concatenate_raws(raws)
         raw_all = infer_preictal_interactal(raw_all)
 
+
         # plot the annotation
-        # raw_all.plot(scalings="auto", duration=30)
-        # plt.show()
+        if plot:
+            raw_all.plot(scalings="auto", duration=30)
+            plt.show()
 
         X, y, group_ids = extract_segments_with_labels_bids(
             raw_all, segment_sec=5, overlap=0.0, keep_labels={"preictal", "interictal"}
         )
 
-        # --- Print statistics ---
-        print("\n=== Extraction statistics ===")
-        print(f"Total segments: {len(y)}")
-        counts = Counter(y)
-        for label, cnt in counts.items():
-            print(f"  {label}: {cnt}")
-        group_counts = Counter(group_ids)
-        print(f"Groups extracted: {len(group_counts)}")
-        for gid, cnt in group_counts.items():
-            print(f"  {gid}: {cnt} segments")
-        print("=============================\n")
 
-        # Convert to float32 before saving
-        X = X.astype(np.float32)
+        if show_statistics:
+            # --- Print statistics ---
+            print("\n=== Extraction statistics ===")
+            print(f"Total segments: {len(y)}")
+            counts = Counter(y)
+            for label, cnt in counts.items():
+                print(f"  {label}: {cnt}")
+            group_counts = Counter(group_ids)
+            print(f"Groups extracted: {len(group_counts)}")
+            for gid, cnt in group_counts.items():
+                print(f"  {gid}: {cnt} segments")
+            print("=============================\n")
 
         if save_uint16:
             X, scales = scale_to_uint16(X)
