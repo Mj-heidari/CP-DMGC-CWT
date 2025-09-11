@@ -11,7 +11,6 @@ from collections import Counter
 
 def process_chbmit_bids_dataset(
     dataset_dir: str,
-    output_dir: str,
     save_uint16: bool = False,
     plot: bool = False,
     show_statistics: bool = True,
@@ -23,8 +22,6 @@ def process_chbmit_bids_dataset(
     ----------
     dataset_dir : str
         Path to CHB-MIT dataset (contains chb01, chb02, ..., chb24 folders)
-    output_dir : str
-        Directory to save per-subject .npz files
     save_uint16 : bool, optional
         If True, saves EEG data scaled to uint16 with per-sample min/max for reconstruction.
         Default is False (save as float32).
@@ -36,8 +33,7 @@ def process_chbmit_bids_dataset(
         Default is True.
     """
 
-    os.makedirs(output_dir, exist_ok=True)
-    sessions_pathes = glob.glob("./data/BIDS_CHB-MIT/*/*")
+    sessions_pathes = glob.glob(os.path.join(dataset_dir, "/*/*"))
     for session_path in sorted(sessions_pathes):
         edf_files = sorted(glob.glob(session_path + "/eeg/*.edf"))
         raws = []
@@ -103,6 +99,5 @@ def process_chbmit_bids_dataset(
 
 
 if __name__ == "__main__":
-    dataset_dir = "data\BIDS_CHB-MIT"
-    output_dir = "processed"
-    process_chbmit_bids_dataset(dataset_dir, output_dir)
+    dataset_dir = "data/BIDS_CHB-MIT"
+    process_chbmit_bids_dataset(dataset_dir)
