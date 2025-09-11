@@ -364,3 +364,38 @@ def extract_segments_with_labels_bids(
 
     return X, y, group_ids
 
+def scale_to_uint16(X: np.ndarray):
+    """
+    Scale a 3D EEG dataset (samples × channels × time-points)
+    to uint16 per sample.
+
+    Parameters
+    ----------
+    X : np.ndarray
+        EEG data of shape (n_samples, n_channels, n_times).
+
+    Returns
+    -------
+    X_uint16 : np.ndarray
+        Scaled EEG data in uint16.
+    scales : np.ndarray
+        Per-sample (min, max) values used for scaling (shape: n_samples × 2).
+    """
+    n_samples, n_channels, n_times = X.shape
+    X_uint16 = np.zeros_like(X, dtype=np.uint16)
+    scales = np.zeros((n_samples, 2), dtype=np.float32)
+
+    for i in range(n_samples):
+        x = X[i]
+        x_min = x.min()
+        x_max = x.max()
+        scales[i] = (x_min, x_max)
+
+        if x_max == x_min:  # avoid division by zero
+            scaled = np.zeros_like(x)
+        else:
+            scaled = (x - x_min) / (x_max - x_min) * 65535
+
+        X_uint16[i] = scaled.astype(np.uint16)
+
+    return X_uint16, scales

@@ -9,7 +9,7 @@ from collections import Counter
 
 
 
-def process_chbmit_bids_dataset(dataset_dir: str, output_dir: str):
+def process_chbmit_bids_dataset(dataset_dir: str, output_dir: str, save_uint16: bool = True):
     """
     Process all subjects in CHB-MIT (BIDS format) dataset and save per-subject segments and labels.
 
@@ -19,6 +19,9 @@ def process_chbmit_bids_dataset(dataset_dir: str, output_dir: str):
         Path to CHB-MIT dataset (contains chb01, chb02, ..., chb24 folders)
     output_dir : str
         Directory to save per-subject .npz files
+    save_uint16 : bool, optional
+        If True, saves EEG data scaled to uint16 with per-sample min/max for reconstruction.
+        Default is False (save as float32).
     """
 
     os.makedirs(output_dir, exist_ok=True)
@@ -64,9 +67,24 @@ def process_chbmit_bids_dataset(dataset_dir: str, output_dir: str):
         # Convert to float32 before saving
         X = X.astype(np.float32)
 
-        np.savez_compressed(
-            session_path + "/eeg/processed_segments.npz", X=X, y=y, group_ids=group_ids
-        )
+        if save_uint16:
+            X, scales = scale_to_uint16(X)
+            np.savez_compressed(
+                session_path + "/eeg/processed_segments_uint16.npz",
+                X=X,
+                y=y,
+                group_ids=group_ids,
+                scales=scales,
+            )
+        else:
+            X = X.astype(np.float32)
+            np.savez_compressed(
+                session_path + "/eeg/processed_segments.npz",
+                X=X,
+                y=y,
+                group_ids=group_ids,
+            )
+
 
         break
 
