@@ -399,3 +399,32 @@ def scale_to_uint16(X: np.ndarray):
         X_uint16[i] = scaled.astype(np.uint16)
 
     return X_uint16, scales
+
+def invert_uint16_scaling(X_uint16: np.ndarray, scales: np.ndarray) -> np.ndarray:
+    """
+    Reconstruct float32 EEG data from uint16 scaled values.
+
+    Parameters
+    ----------
+    X_uint16 : np.ndarray
+        EEG data scaled to uint16, shape (n_samples, n_channels, n_times).
+    scales : np.ndarray
+        Per-sample (min, max) values, shape (n_samples, 2).
+
+    Returns
+    -------
+    X_reconstructed : np.ndarray
+        Reconstructed EEG data as float32, same shape as X_uint16.
+    """
+    n_samples, n_channels, n_times = X_uint16.shape
+    X_reconstructed = np.zeros((n_samples, n_channels, n_times), dtype=np.float32)
+
+    for i in range(n_samples):
+        x_uint16 = X_uint16[i].astype(np.float32)
+        x_min, x_max = scales[i]
+        if x_max == x_min:  # flat signal case
+            X_reconstructed[i] = np.full_like(x_uint16, fill_value=x_min, dtype=np.float32)
+        else:
+            X_reconstructed[i] = (x_uint16 / 65535.0) * (x_max - x_min) + x_min
+
+    return X_reconstructed
