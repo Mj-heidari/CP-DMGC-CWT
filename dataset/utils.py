@@ -135,7 +135,7 @@ def add_seizure_annotations_bids(
         raw.set_annotations(annotations)
     return raw
 
-def infer_preictal_interactal(raw: mne.io.Raw, dynamic_preictal: bool = False) -> mne.io.Raw:
+def infer_preictal_interactal(raw: mne.io.Raw, dynamic_preictal: bool = False, SPE: int = 0) -> mne.io.Raw:
     """
     Infer preictal and interictal periods in the Raw object based on seizure annotations.
 
@@ -143,7 +143,13 @@ def infer_preictal_interactal(raw: mne.io.Raw, dynamic_preictal: bool = False) -
     ----------
     raw : mne.io.Raw
         Raw EEG with seizure annotations.
-
+    dynamic_preictal : bool, optional
+        If True, adjust preictal duration dynamically when overlapping with excluded intervals.
+        Default is False.
+    SPE : int, optional
+        Seizure Prediction Horizon (in seconds). The preictal period will end at (onset - SPE).
+        Default is 0.
+        
     Returns
     -------
     raw : mne.io.Raw
@@ -188,7 +194,7 @@ def infer_preictal_interactal(raw: mne.io.Raw, dynamic_preictal: bool = False) -
     for i, onset in enumerate(seizure_onsets):
         # mark 15 mins before onset as preictal if the period is not excluded
         preictal_start = max(0, onset - 15 * 60)
-        preictal_end = onset
+        preictal_end = max(0, onset - SPE)
 
         if not any(
             [
