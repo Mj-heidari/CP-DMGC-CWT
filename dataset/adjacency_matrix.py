@@ -52,7 +52,7 @@ def inverse_mean_threshold_adjacency(dist_matrix):
         for j in range(N):
             if i != j and U[j] < mean:
                 adj_imt[i, j] = 1.0 / (U[j] + 1e-6)
-        adj_imt[i, i] = np.mean((U < mean) * (U))
+        adj_imt[i, i] = 1 / np.mean(U[np.nonzero(U < mean)])
 
     # Make symmetric
     adj_imt = np.maximum(adj_imt, adj_imt.T)
