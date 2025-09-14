@@ -79,15 +79,34 @@ def normalize_A(A: torch.Tensor, symmetry: bool = False) -> torch.Tensor:
     return L
 
 
-def generate_cheby_adj(A: torch.Tensor, num_layers: int) -> torch.Tensor:
+def generate_cheby_adj(L: torch.Tensor, K: int) -> torch.Tensor:
+    """
+    Generate Chebyshev polynomial expansions of the (scaled) Laplacian.
+
+    Computes:
+        T_0(L) = I
+        T_1(L) = L
+        T_k(L) = 2 * L * T_{k-1}(L) - T_{k-2}(L),  for k >= 2
+
+    Args:
+        L (torch.Tensor): Scaled Laplacian matrix of shape (N, N).
+        K (int): Number of Chebyshev polynomials.
+
+    Returns:
+        List[torch.Tensor]: [T_0(L), T_1(L), ..., T_{K-1}(L)].
+
+    Note:
+        Chebyshev polynomials are stable on [-1, 1] and provide 
+        efficient approximations of spectral filters.
+    """
     support = []
-    for i in range(num_layers):
+    for i in range(K):
         if i == 0:
-            support.append(torch.eye(A.shape[1]).to(A.device))
+            support.append(torch.eye(L.shape[0], device=L.device))
         elif i == 1:
-            support.append(A)
+            support.append(L)
         else:
-            temp = torch.matmul(support[-1], A)
+            temp = 2 * torch.matmul(L, support[-1]) - support[-2]
             support.append(temp)
     return support
 
