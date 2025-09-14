@@ -38,6 +38,32 @@ class Linear(nn.Module):
 
 
 def normalize_A(A: torch.Tensor, symmetry: bool = False) -> torch.Tensor:
+    """
+    Compute the scaled Laplacian matrix from an adjacency matrix, assuming
+    the largest eigenvalue lmax = 2.
+
+    The normalized Laplacian is defined as:
+        L = I - D^(-1/2) A D^(-1/2)
+    and the scaled Laplacian for Chebyshev polynomials is:
+        L_norm = (2 / lmax) * L - I
+
+    With the common assumption lmax = 2, this simplifies to:
+        L_norm = - D^(-1/2) A D^(-1/2)
+
+    Args:
+        A (torch.Tensor): Input adjacency matrix of shape (N, N).
+        symmetry (bool, optional): 
+            If True, enforce symmetric normalization (D^(-1/2) A D^(-1/2));
+            if False, use left normalization (D^(-1) A). Default: False.
+
+    Returns:
+        torch.Tensor: The scaled Laplacian matrix of shape (N, N).
+
+    Note:
+        The eigenvalues of the normalized Laplacian always lie in [0, 2].
+        Hence, lmax = 2 is a universal upper bound and a standard assumption
+        to avoid costly eigenvalue computations in practice.
+    """
     A = F.relu(A)
     if symmetry:
         A = A + torch.transpose(A, 0, 1)
