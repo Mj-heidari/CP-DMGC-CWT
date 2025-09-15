@@ -5,23 +5,30 @@ from torch.utils.data import DataLoader, TensorDataset
 from sklearn.metrics import roc_auc_score, accuracy_score, classification_report
 from sklearn.model_selection import KFold
 from tqdm import tqdm
-from models.MB_dMGC_CWTFFNet import MB_dMGC_CWTFFNet
-from models.EEGNet import EEGNet
-
-import os
-import glob
 import numpy as np
+import warnings
+warnings.filterwarnings("ignore")
+
 from dataset.utils import *
 from dataset.dataset import CHBMITDataset
-
+from models.EEGNet import EEGNet
+import os
+import glob
 
 class Trainer:
     def __init__(self, model, device="cuda" if torch.cuda.is_available() else "cpu"):
         self.device = device
         self.model = model.to(self.device)
+        self.criterion = None  # will set dynamically per fold
 
-        self.criterion = nn.CrossEntropyLoss(weight=torch.tensor([0.2, 1.0], device=device))
-        # self.criterion = nn.CrossEntropyLoss()
+    def set_loss_weights(self, y_train):
+        """Set class weights dynamically based on training set distribution."""
+        class_counts = np.bincount(y_train)
+        # inverse frequency weighting
+        weights = class_counts.sum() / (len(class_counts) * class_counts)
+        self.criterion = nn.CrossEntropyLoss(
+            weight=torch.tensor(weights, dtype=torch.float32, device=self.device)
+        )
 
     def train_one_epoch(self, train_loader, optimizer):
         self.model.train()
@@ -72,15 +79,20 @@ class Trainer:
         except ValueError:
             auc = float("nan")
         report = classification_report(all_labels, all_preds, digits=4)
-        return avg_loss, acc, auc, report, all_probs
+        return avg_loss, acc, auc, report, np.array(all_probs), np.array(all_preds), np.array(all_labels)
 
 
-def run_nested_cv(X, y, group_ids, model_class, 
+def run_nested_cv(X, y, group_ids, model_builder,
                   n_inner_folds=5, batch_size=64, lr=1e-3, epochs=20):
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    """
+    model_builder: function that returns a *new model object*
+    """
 
+    device = "cuda" if torch.cuda.is_available() else "cpu"
     dataset = CHBMITDataset(X, y, group_ids)
     all_results = []
+
+    sample_sec = 5.0  # each sample = 5 seconds
 
     for outer_idx in range(dataset.N):
         print(f"\n===== Outer Fold {outer_idx+1}/{dataset.N} =====")
@@ -100,7 +112,7 @@ def run_nested_cv(X, y, group_ids, model_class,
         for inner_idx, (tr_idx, val_idx) in enumerate(kf.split(X_train)):
             print(f"\n  --- Inner Fold {inner_idx+1}/{n_inner_folds} ---")
 
-            # Build train/val/test datasets
+            # Build datasets
             train_ds = TensorDataset(
                 torch.tensor(X_train[tr_idx], dtype=torch.float32),
                 torch.tensor(y_train[tr_idx], dtype=torch.long),
@@ -119,42 +131,88 @@ def run_nested_cv(X, y, group_ids, model_class,
             test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False)
 
             # Model & trainer
-            # model = model_class()
-            model = model_class(chunk_size=640,
-                        num_electrodes=18,
-                        dropout=0.5,
-                        kernel_1=64,
-                        kernel_2=16,
-                        F1=8,
-                        F2=16,
-                        D=2,
-                        num_classes=2)
-
+            model = model_builder()
             trainer = Trainer(model, device=device)
+            trainer.set_loss_weights(y_train[tr_idx])
+
             optimizer = optim.Adam(model.parameters(), lr=lr)
+            scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.5)
 
             # Training loop
             for epoch in range(1, epochs + 1):
                 tr_loss, tr_acc = trainer.train_one_epoch(train_loader, optimizer)
-                val_loss, val_acc, val_auc, _ , _= trainer.evaluate(val_loader)
+                val_loss, val_acc, val_auc, _, _, _, _ = trainer.evaluate(val_loader)
+                scheduler.step()
                 print(f"Epoch {epoch:02d} | "
                       f"Train {tr_loss:.4f}/{tr_acc:.4f} | "
                       f"Val {val_loss:.4f}/{val_acc:.4f}/{val_auc:.4f}")
 
             # Predict test set for ensemble
-            _, _, _, _, test_probs = trainer.evaluate(test_loader)
+            _, _, _, _, test_probs, _, _ = trainer.evaluate(test_loader)
             test_probs_ensemble.append(test_probs)
 
         # Ensemble (mean across inner models)
         final_probs = np.mean(test_probs_ensemble, axis=0)
-        outer_auc = roc_auc_score(y_test, final_probs)
-        print(f"\n==> Outer Fold {outer_idx+1} AUC={outer_auc:.4f}")
-        all_results.append(outer_auc)
+        final_preds = (final_probs >= 0.5).astype(int)
+
+        # === Metrics on outer test ===
+        auc = roc_auc_score(y_test, final_probs)
+
+        # Classification report
+        report = classification_report(y_test, final_preds, digits=4)
+
+        # Sensitivity: at least one preictal detected
+        has_preictal = np.any(y_test == 1)
+        if has_preictal:
+            detected = np.any((y_test == 1) & (final_preds == 1))
+            sensitivity = 1 if detected else 0
+        else:
+            sensitivity = np.nan  # no seizures in test
+
+        # FPR/h
+        false_positives = np.sum((y_test == 0) & (final_preds == 1))
+        hours = (len(y_test) * sample_sec) / 3600.0
+        fpr_per_hour = false_positives / hours if hours > 0 else np.nan
+
+        print(f"\n==> Outer Fold {outer_idx+1} "
+              f"AUC={auc:.4f}, Sensitivity={sensitivity}, FPR/h={fpr_per_hour:.4f}")
+        print(report)
+
+        all_results.append({
+            "auc": auc,
+            "sensitivity": sensitivity,
+            "fpr_per_hour": fpr_per_hour,
+            'report': report
+        })
+
+    # Summary
+    aucs = [r["auc"] for r in all_results]
+    sens = [r["sensitivity"] for r in all_results if not np.isnan(r["sensitivity"])]
+    fprs = [r["fpr_per_hour"] for r in all_results]
 
     print("\n==== Final Results ====")
-    print("Per-fold AUC:", all_results)
-    print("Mean AUC:", np.mean(all_results))
+    print("Per-fold:", all_results)
+    print(f"Mean AUC={np.mean(aucs):.4f}, "
+          f"Mean Sensitivity={np.mean(sens):.4f}, "
+          f"Mean FPR/h={np.mean(fprs):.4f}")
+
     return all_results
+
+def model_builder(model_class, **kwargs):
+    """
+    Returns a function that builds a fresh model instance.
+    This avoids weight leakage across folds.
+
+    Args:
+        model_class: torch.nn.Module class (e.g., EEGNet)
+        kwargs: parameters to initialize the model
+
+    Returns:
+        A callable that builds a new model each time it's called
+    """
+    def build():
+        return model_class(**kwargs)
+    return build
 
 
 if __name__ == "__main__":
@@ -187,13 +245,26 @@ if __name__ == "__main__":
         y = np.concatenate(subj_y, axis=0)
         group_ids = np.concatenate(subj_group_ids, axis=0)
 
+        builder = model_builder(
+            EEGNet,
+            chunk_size=640,
+            num_electrodes=18,
+            dropout=0.5,
+            kernel_1=64,
+            kernel_2=16,
+            F1=8,
+            F2=16,
+            D=2,
+            num_classes=2,
+        )
+
         # Run nested CV for this subject
         results = run_nested_cv(
             X=X,
             y=y,
             group_ids=group_ids,
             # model_class=MB_dMGC_CWTFFNet,
-            model_class=EEGNet,
+            model_builder=builder,
             n_inner_folds=5,
             batch_size=64,
             lr=1e-3,
