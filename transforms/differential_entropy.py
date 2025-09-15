@@ -38,11 +38,8 @@ class BandTransform:
     def apply(self, eeg: np.ndarray, **kwargs) -> np.ndarray:
         band_list = []
         for b, a in self.filters_parameters.values():
-            ch_list = []
             filtered_eeg = lfilter(b, a, eeg)
-            ch_list = [self.opt(ch) for ch in filtered_eeg]
-            ch_list = np.array(ch_list)
-            band_list.append(ch_list)
+            band_list.append(self.opt(filtered_eeg))
         return np.stack(band_list, axis=-1)
 
     def opt(self, eeg: np.ndarray, **kwargs) -> np.ndarray:
