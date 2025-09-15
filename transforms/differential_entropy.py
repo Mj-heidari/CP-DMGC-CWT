@@ -38,11 +38,11 @@ class BandTransform:
     def apply(self, eeg: np.ndarray, **kwargs) -> np.ndarray:
         band_list = []
         for b, a in self.filters_parameters.values():
-            c_list = []
-            for c in eeg:
-                c_list.append(self.opt(lfilter(b, a, c)))
-            c_list = np.array(c_list)
-            band_list.append(c_list)
+            ch_list = []
+            filtered_eeg = lfilter(b, a, eeg)
+            ch_list = [self.opt(ch) for ch in filtered_eeg]
+            ch_list = np.array(ch_list)
+            band_list.append(ch_list)
         return np.stack(band_list, axis=-1)
 
     def opt(self, eeg: np.ndarray, **kwargs) -> np.ndarray:
@@ -82,7 +82,7 @@ class BandDifferentialEntropy(BandTransform):
         return super().__call__(*args, eeg=eeg, **kwargs)
 
     def opt(self, eeg: np.ndarray, **kwargs) -> np.ndarray:
-        return 1 / 2 * np.log2(2 * np.pi * np.e * np.var(eeg))
+        return 0.5 * np.log2(2 * np.pi * np.e * np.var(eeg, axis= -1))
 
 if __name__ == "__main__":
     transform = BandDifferentialEntropy(sampling_rate=128, order=5)
