@@ -6,6 +6,8 @@ from sklearn.metrics import roc_auc_score, accuracy_score, classification_report
 from sklearn.model_selection import KFold
 from tqdm import tqdm
 from models.MB_dMGC_CWTFFNet import MB_dMGC_CWTFFNet
+from models.EEGNet import EEGNet
+
 import os
 import glob
 import numpy as np
@@ -17,7 +19,9 @@ class Trainer:
     def __init__(self, model, device="cuda" if torch.cuda.is_available() else "cpu"):
         self.device = device
         self.model = model.to(self.device)
-        self.criterion = nn.CrossEntropyLoss()
+
+        self.criterion = nn.CrossEntropyLoss(weight=torch.tensor([0.2, 1.0], device=device))
+        # self.criterion = nn.CrossEntropyLoss()
 
     def train_one_epoch(self, train_loader, optimizer):
         self.model.train()
@@ -27,6 +31,7 @@ class Trainer:
             X, y = X.to(self.device), y.to(self.device)
 
             optimizer.zero_grad()
+            X = X.unsqueeze(1)
             outputs = self.model(X)
             loss = self.criterion(outputs, y)
             loss.backward()
@@ -48,6 +53,7 @@ class Trainer:
         with torch.no_grad():
             for X, y in tqdm(loader, desc="Evaluating", leave=False):
                 X, y = X.to(self.device), y.to(self.device)
+                X = X.unsqueeze(1)
                 outputs = self.model(X)
                 loss = self.criterion(outputs, y)
 
@@ -113,7 +119,17 @@ def run_nested_cv(X, y, group_ids, model_class,
             test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False)
 
             # Model & trainer
-            model = model_class()
+            # model = model_class()
+            model = model_class(chunk_size=640,
+                        num_electrodes=18,
+                        dropout=0.5,
+                        kernel_1=64,
+                        kernel_2=16,
+                        F1=8,
+                        F2=16,
+                        D=2,
+                        num_classes=2)
+
             trainer = Trainer(model, device=device)
             optimizer = optim.Adam(model.parameters(), lr=lr)
 
@@ -176,7 +192,8 @@ if __name__ == "__main__":
             X=X,
             y=y,
             group_ids=group_ids,
-            model_class=MB_dMGC_CWTFFNet,
+            # model_class=MB_dMGC_CWTFFNet,
+            model_class=EEGNet,
             n_inner_folds=5,
             batch_size=64,
             lr=1e-3,
