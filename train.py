@@ -1,8 +1,9 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, TensorDataset
 from sklearn.metrics import roc_auc_score, accuracy_score, classification_report
+from sklearn.model_selection import KFold
 from tqdm import tqdm
 from models.MB_dMGC_CWTFFNet import MB_dMGC_CWTFFNet
 import os
@@ -10,6 +11,7 @@ import glob
 import numpy as np
 from dataset.utils import *
 from dataset.dataset import CHBMITDataset
+
 
 class Trainer:
     def __init__(self, model, device="cuda" if torch.cuda.is_available() else "cpu"):
@@ -62,85 +64,128 @@ class Trainer:
         try:
             auc = roc_auc_score(all_labels, all_probs)
         except ValueError:
-            auc = float("nan")  # if only one class present
+            auc = float("nan")
         report = classification_report(all_labels, all_preds, digits=4)
-        return avg_loss, acc, auc, report
+        return avg_loss, acc, auc, report, all_probs
 
-def run_cross_validation(X, y, group_ids, model_class, n_folds=5, 
-                         batch_size=64, lr=1e-3, epochs=20):
+
+def run_nested_cv(X, y, group_ids, model_class, 
+                  n_inner_folds=5, batch_size=64, lr=1e-3, epochs=20):
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    fold_metrics = []
 
-    for fold_idx in range(n_folds):
-        print(f"\n===== Fold {fold_idx+1}/{n_folds} =====")
-        dataset = CHBMITDataset(X, y, group_ids, fold_idx=fold_idx, n_folds=n_folds)
+    dataset = CHBMITDataset(X, y, group_ids)
+    all_results = []
 
-        # Train loader
-        dataset.set_split("train")
-        train_loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+    for outer_idx in range(dataset.N):
+        print(f"\n===== Outer Fold {outer_idx+1}/{dataset.N} =====")
+        dataset.set_leave_out(outer_idx)
 
-        # Test loader
+        # Split into test set
         dataset.set_split("test")
-        test_loader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
+        X_test, y_test = dataset.X, dataset.y
 
-        # Model & trainer
-        model = model_class()
-        trainer = Trainer(model, device=device)
-        optimizer = optim.Adam(model.parameters(), lr=lr)
+        # Train pool
+        X_train, y_train = dataset.X_train, dataset.y_train
 
-        # Training loop
-        for epoch in range(1, epochs + 1):
-            train_loss, train_acc = trainer.train_one_epoch(train_loader, optimizer)
-            val_loss, val_acc, val_auc, _ = trainer.evaluate(test_loader)
+        # Inner 5-fold CV
+        kf = KFold(n_splits=n_inner_folds, shuffle=True, random_state=42)
+        test_probs_ensemble = []
 
-            print(f"Epoch {epoch:02d}: "
-                  f"Train Loss={train_loss:.4f}, Acc={train_acc:.4f} | "
-                  f"Val Loss={val_loss:.4f}, Acc={val_acc:.4f}, AUC={val_auc:.4f}")
+        for inner_idx, (tr_idx, val_idx) in enumerate(kf.split(X_train)):
+            print(f"\n  --- Inner Fold {inner_idx+1}/{n_inner_folds} ---")
 
-        # Final evaluation
-        test_loss, test_acc, test_auc, report = trainer.evaluate(test_loader)
-        print("\nClassification Report:\n", report)
+            # Build train/val/test datasets
+            train_ds = TensorDataset(
+                torch.tensor(X_train[tr_idx], dtype=torch.float32),
+                torch.tensor(y_train[tr_idx], dtype=torch.long),
+            )
+            val_ds = TensorDataset(
+                torch.tensor(X_train[val_idx], dtype=torch.float32),
+                torch.tensor(y_train[val_idx], dtype=torch.long),
+            )
+            test_ds = TensorDataset(
+                torch.tensor(X_test, dtype=torch.float32),
+                torch.tensor(y_test, dtype=torch.long),
+            )
 
-        fold_metrics.append({
-            "fold": fold_idx,
-            "test_loss": test_loss,
-            "test_acc": test_acc,
-            "test_auc": test_auc,
-        })
+            train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
+            val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False)
+            test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False)
 
-    return fold_metrics
+            # Model & trainer
+            model = model_class()
+            trainer = Trainer(model, device=device)
+            optimizer = optim.Adam(model.parameters(), lr=lr)
+
+            # Training loop
+            for epoch in range(1, epochs + 1):
+                tr_loss, tr_acc = trainer.train_one_epoch(train_loader, optimizer)
+                val_loss, val_acc, val_auc, _ , _= trainer.evaluate(val_loader)
+                print(f"Epoch {epoch:02d} | "
+                      f"Train {tr_loss:.4f}/{tr_acc:.4f} | "
+                      f"Val {val_loss:.4f}/{val_acc:.4f}/{val_auc:.4f}")
+
+            # Predict test set for ensemble
+            _, _, _, _, test_probs = trainer.evaluate(test_loader)
+            test_probs_ensemble.append(test_probs)
+
+        # Ensemble (mean across inner models)
+        final_probs = np.mean(test_probs_ensemble, axis=0)
+        outer_auc = roc_auc_score(y_test, final_probs)
+        print(f"\n==> Outer Fold {outer_idx+1} AUC={outer_auc:.4f}")
+        all_results.append(outer_auc)
+
+    print("\n==== Final Results ====")
+    print("Per-fold AUC:", all_results)
+    print("Mean AUC:", np.mean(all_results))
+    return all_results
+
 
 if __name__ == "__main__":
-
     dataset_dir = "data/BIDS_CHB-MIT"
-    sessions_pathes = glob.glob(os.path.join(dataset_dir, "*", "*", 'eeg', '*'))
-    for sessions_path in sessions_pathes:
-        data = np.load(sessions_path)
-        X, scales = data["X"], data["scales"]
+    subject_dirs = sorted(glob.glob(os.path.join(dataset_dir, "sub-*")))
 
-        # Reconstruct float32 EEG
-        X = invert_uint16_scaling(X, scales)
+    all_results = {}
 
-    X = X[:]
-    y = data['y'][:]
-    group_ids = data["group_ids"][:]
+    for subj_path in subject_dirs:
+        subj_id = os.path.basename(subj_path)
+        print(f"\n############################")
+        print(f"#### Processing {subj_id} ####")
+        print(f"############################")
 
+        # Collect all sessions for this subject
+        ses_paths = glob.glob(os.path.join(subj_path, "ses-*", "eeg", "*.npz"))
 
-    metrics = run_cross_validation(
-        X=X,
-        y=y,
-        group_ids=group_ids,
-        model_class=MB_dMGC_CWTFFNet,
-        n_folds=5,
-        batch_size=64,
-        lr=1e-3,
-        epochs=20
-    )
+        subj_X, subj_y, subj_group_ids = [], [], []
+        for ses_path in ses_paths:
+            data = np.load(ses_path)
+            X, scales = data["X"], data["scales"]
+            X = invert_uint16_scaling(X, scales)
 
-    print("\n===== Cross-validation results =====")
-    for m in metrics:
-        print(f"Fold {m['fold']}: "
-            f"Acc={m['test_acc']:.4f}, AUC={m['test_auc']:.4f}, Loss={m['test_loss']:.4f}")
+            subj_X.append(X)
+            subj_y.append(data["y"])
+            subj_group_ids.append(data["group_ids"])
 
-    mean_auc = np.nanmean([m["test_auc"] for m in metrics])
-    print(f"\nMean AUC across folds: {mean_auc:.4f}")
+        # Concatenate sessions of this subject
+        X = np.concatenate(subj_X, axis=0)
+        y = np.concatenate(subj_y, axis=0)
+        group_ids = np.concatenate(subj_group_ids, axis=0)
+
+        # Run nested CV for this subject
+        results = run_nested_cv(
+            X=X,
+            y=y,
+            group_ids=group_ids,
+            model_class=MB_dMGC_CWTFFNet,
+            n_inner_folds=5,
+            batch_size=64,
+            lr=1e-3,
+            epochs=20,
+        )
+
+        all_results[subj_id] = results
+
+    # Final summary
+    print("\n\n==== Overall Results Across Subjects ====")
+    for subj_id, results in all_results.items():
+        print(f"{subj_id}: mean AUC={np.mean(results):.4f} | per-fold={results}")
