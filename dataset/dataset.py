@@ -1,82 +1,133 @@
 import torch
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, Subset
 import numpy as np
-from sklearn.utils import shuffle
-from collections import defaultdict
 from typing import Callable, List
+import glob
+import os
+from .utils import invert_uint16_scaling
+from tqdm import tqdm
+
 
 class CHBMITDataset(Dataset):
     def __init__(
         self,
-        X,
-        y,
-        group_ids,
+        dataset_dir: str = "data/BIDS_CHB-MIT",
+        use_uint16: bool = False,
+        subject_id: str = "01",
         online_transforms: List[Callable] = None,
         offline_transforms: List[Callable] = None,
     ):
         """
         Args:
-            X (ndarray): EEG data, shape (N, C, T)
-            y (ndarray): labels, shape (N,)
-            group_ids (ndarray): group labels (e.g. 'preictal_1', 'interictal_2')
+            dataset_dir (string): path to the processed BIDS_CHB-MIT dataset
+            use_uint16 (boolean): if true uses
+            subject_id (str): use "*" to include all subjects,
         """
+        subject_dirs = sorted(glob.glob(os.path.join(dataset_dir, f"sub-{subject_id}")))
+
+        for subj_path in tqdm(subject_dirs):
+            subj_id = os.path.basename(subj_path)
+
+            # Collect all sessions for this subject
+            suffix = "*uint16.npz" if use_uint16 else "*segments.npz"
+            ses_paths = glob.glob(os.path.join(subj_path, "ses-*", "eeg", suffix))
+            if ses_paths == []:
+                continue
+
+            subj_X, subj_y, subj_group_ids = [], [], []
+            for ses_path in ses_paths:
+                data = np.load(ses_path)
+
+                X_temp = data["X"]
+                if use_uint16:
+                    scales = data["scales"]
+                    X_temp = invert_uint16_scaling(X_temp, scales)
+
+                subj_X.append(X_temp)
+                subj_y.append(data["y"])
+                subj_group_ids.append(data["group_ids"])
+
+            # Concatenate sessions of this subject
+            X = np.concatenate(subj_X, axis=0)
+            y = np.concatenate(subj_y, axis=0)
+            group_ids = np.concatenate(subj_group_ids, axis=0)
+
         self.online_transform = online_transforms or []
 
         # Encode labels to 0/1
-        self.y_full = np.array([1 if label == "preictal" else 0 for label in y])
-        self.X_full = X
+        self.y = np.array([1 if label == "preictal" else 0 for label in y]).astype(
+            np.long
+        )
+        self.X = X.astype(np.float32)
         self.group_ids = group_ids
 
         # Apply offline transforms once
         for transform in offline_transforms or []:
-            self.X_full = transform(self.X_full)
-
-        # Preictal groups
-        self.preictal_groups = sorted(
-            set(g for g in self.group_ids if g.startswith("preictal"))
-        )
-        self.N = len(self.preictal_groups)
-
-        # Interictal chunks (precomputed)
-        interictal_idx = [i for i, g in enumerate(self.group_ids) if g.startswith("interictal")]
-        interictal_idx = shuffle(interictal_idx, random_state=42)
-        self.interictal_chunks = np.array_split(interictal_idx, self.N)
-
-        # Storage for current split
-        self.X_train, self.y_train, self.X_test, self.y_test = None, None, None, None
-        self.X, self.y = None, None
-
-    def set_leave_out(self, leave_out_idx: int):
-        """Set which seizure group is left out for testing."""
-        test_preictal_group = self.preictal_groups[leave_out_idx]
-        test_interictal_idx = self.interictal_chunks[leave_out_idx]
-
-        test_mask = np.array(
-            [(g == test_preictal_group) or (i in test_interictal_idx)
-             for i, g in enumerate(self.group_ids)]
-        )
-        train_mask = ~test_mask
-
-        self.X_train, self.y_train = self.X_full[train_mask], self.y_full[train_mask]
-        self.X_test, self.y_test = self.X_full[test_mask], self.y_full[test_mask]
-
-        # Default = training set
-        self.X, self.y = self.X_train, self.y_train
-
-    def set_split(self, split="train"):
-        if split == "train":
-            self.X, self.y = self.X_train, self.y_train
-        elif split == "test":
-            self.X, self.y = self.X_test, self.y_test
-        else:
-            raise ValueError("split must be 'train' or 'test'")
+            transformed_X = []
+            for i in range(self.X.shape[0]):
+                transformed_X.append(transform(eeg=self.X[i]))
+            self.X = np.stack(transformed_X, axis=0)
 
     def __len__(self):
         return len(self.X)
 
     def __getitem__(self, idx):
-        x = self.X[idx].astype(np.float32)
-        y = int(self.y[idx])
+        x = self.X[idx]
+        y = self.y[idx]
+        # g = self.group_ids[idx]
         for transform in self.online_transform:
             x = transform(x)
-        return torch.tensor(x), torch.tensor(y)
+        return torch.tensor(x), torch.tensor(y, dtype=torch.long)
+
+
+def leave_one_preictal_group_out(dataset, shuffle=True, random_state=0):
+    """
+    Cross-validation splitter:
+      - Each fold leaves one preictal group out for testing.
+      - Remaining preictal groups go to training.
+      - Interictal samples are split into the same number of folds.
+    """
+    if isinstance(dataset, torch.utils.data.Subset):
+        base_ds = dataset.dataset
+        idx = dataset.indices
+        y = base_ds.y[idx]
+        group_id = base_ds.group_ids[idx]
+    else:
+        y, group_id = dataset.y, dataset.group_ids
+
+    # Masks
+    pre_mask = y == 1
+    inter_mask = ~pre_mask
+
+    # Unique preictal groups
+    pre_groups = np.unique(group_id[pre_mask])
+    n_splits = len(pre_groups)
+
+    # Shuffle interictal indices reproducibly
+    rng = np.random.default_rng(seed=random_state)
+    inter_indices = np.where(inter_mask)[0]
+    rng.shuffle(inter_indices)
+
+    # Divide interictal into n_splits chunks
+    inter_chunks = np.array_split(inter_indices, n_splits)
+
+    # Build folds
+    for fold, test_group in enumerate(pre_groups):
+        # Preictal split
+        pre_test_mask = group_id == test_group
+        pre_train_mask = pre_mask & ~pre_test_mask
+
+        pre_train_idx = np.where(pre_train_mask)[0]
+        pre_test_idx = np.where(pre_test_mask)[0]
+
+        # Interictal split
+        inter_test_idx = inter_chunks[fold]
+        inter_train_idx = np.hstack(
+            [chunk for i, chunk in enumerate(inter_chunks) if i != fold]
+        )
+
+        # Combine
+        train_idx = np.concatenate([pre_train_idx, inter_train_idx]).tolist()
+        test_idx = np.concatenate([pre_test_idx, inter_test_idx]).tolist()
+
+        yield Subset(dataset, train_idx), Subset(dataset, test_idx)
