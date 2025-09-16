@@ -8,6 +8,7 @@ from dataset.utils import *
 from dataset.dataset import CHBMITDataset, leave_one_preictal_group_out
 
 from models.EEGNet import EEGNet
+from models.CE_stSENet.CE_stSENet import CE_stSENet
 
 import numpy as np
 import warnings
@@ -38,7 +39,10 @@ class Trainer:
             X, y = X.to(self.device), y.to(self.device)
 
             optimizer.zero_grad()
-            X = X.unsqueeze(1)
+            if self.model.__class__.__name__ == 'CE_stSENet':
+                X = X.unsqueeze(2)
+            elif self.model.__class__.__name__ == 'EEGNet':
+                X = X.unsqueeze(1)
             outputs = self.model(X)
             loss = self.criterion(outputs, y)
             loss.backward()
@@ -60,7 +64,10 @@ class Trainer:
         with torch.no_grad():
             for X, y in tqdm(loader, desc="Evaluating", leave=False):
                 X, y = X.to(self.device), y.to(self.device)
-                X = X.unsqueeze(1)
+                if self.model.__class__.__name__ == 'CE_stSENet':
+                    X = X.unsqueeze(2)
+                elif self.model.__class__.__name__ == 'EEGNet':
+                    X = X.unsqueeze(1)
                 outputs = self.model(X)
                 loss = self.criterion(outputs, y)
 
@@ -191,19 +198,28 @@ def model_builder(model_class, **kwargs):
 if __name__ == "__main__":
     dataset_dir = "data/BIDS_CHB-MIT"
     dataset = CHBMITDataset(dataset_dir, offline_transforms=[])
-   
-    builder = model_builder(
-        EEGNet,
-        chunk_size=640,
-        num_electrodes=18,
-        dropout=0.5,
-        kernel_1=64,
-        kernel_2=16,
-        F1=8,
-        F2=16,
-        D=2,
-        num_classes=2,
-    )
+    model = 'CE-stSENet'
+
+    if model == 'EEGNet':
+        builder = model_builder(
+            EEGNet,
+            chunk_size=640,
+            num_electrodes=18,
+            dropout=0.5,
+            kernel_1=64,
+            kernel_2=16,
+            F1=8,
+            F2=16,
+            D=2,
+            num_classes=2,
+        )
+    elif model == 'CE-stSENet':
+        builder = model_builder(
+            CE_stSENet,
+            inc=18,
+            class_num=2,
+            si=128,
+        )
 
     # Run nested CV for this subject
     results = run_nested_cv(
