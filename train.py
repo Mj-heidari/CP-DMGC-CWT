@@ -1,19 +1,18 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader, TensorDataset
+from torch.utils.data import DataLoader
 from sklearn.metrics import roc_auc_score, accuracy_score, classification_report
-from sklearn.model_selection import KFold
 from tqdm import tqdm
+from dataset.utils import *
+from dataset.dataset import CHBMITDataset, leave_one_preictal_group_out
+
+from models.EEGNet import EEGNet
 
 import numpy as np
 import warnings
 warnings.filterwarnings("ignore")
 
-from dataset.utils import *
-from dataset.dataset import CHBMITDataset, leave_one_preictal_group_out
-
-from models.EEGNet import EEGNet
 
 
 class Trainer:
@@ -106,7 +105,7 @@ def run_nested_cv(dataset, model_builder,
             # Model & trainer
             model = model_builder()
             trainer = Trainer(model, device=device)
-            trainer.set_loss_weights(y_train[tr_idx])
+            trainer.set_loss_weights(dataset.y[train_dataset.indices])
 
             optimizer = optim.Adam(model.parameters(), lr=lr)
             scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.5)
@@ -145,7 +144,7 @@ def run_nested_cv(dataset, model_builder,
 
         # FPR/h
         false_positives = np.sum((y_test == 0) & (final_preds == 1))
-        hours = (len(y_test) * sample_sec) / 3600.0
+        hours = (len(y_test) * 5) / 3600.0
         fpr_per_hour = false_positives / hours if hours > 0 else np.nan
 
         print(f"\n==> Outer Fold {fold+1} "
