@@ -56,7 +56,7 @@ class CHBMITDataset(Dataset):
 
         # Encode labels to 0/1
         self.y = np.array([1 if label == "preictal" else 0 for label in y]).astype(
-            np.float32
+            np.long
         )
         self.X = X.astype(np.float32)
         self.group_ids = group_ids
@@ -74,10 +74,10 @@ class CHBMITDataset(Dataset):
     def __getitem__(self, idx):
         x = self.X[idx]
         y = self.y[idx]
-        g = self.group_ids[idx]
+        # g = self.group_ids[idx]
         for transform in self.online_transform:
             x = transform(x)
-        return torch.tensor(x), torch.tensor(y), g
+        return torch.tensor(x), torch.tensor(y, dtype=torch.long)
 
 
 def leave_one_preictal_group_out(dataset, shuffle=True, random_state=0):
@@ -87,8 +87,13 @@ def leave_one_preictal_group_out(dataset, shuffle=True, random_state=0):
       - Remaining preictal groups go to training.
       - Interictal samples are split into the same number of folds.
     """
-    y = np.array(dataset.y)
-    group_id = np.array(dataset.group_ids)
+    if isinstance(dataset, torch.utils.data.Subset):
+        base_ds = dataset.dataset
+        idx = dataset.indices
+        y = base_ds.y[idx]
+        group_id = base_ds.group_ids[idx]
+    else:
+        y, group_id = dataset.y, dataset.group_ids
 
     # Masks
     pre_mask = y == 1
