@@ -104,9 +104,9 @@ def leave_one_preictal_group_out(dataset, shuffle=True, random_state=0):
     n_splits = len(pre_groups)
 
     # Shuffle interictal indices reproducibly
-    rng = np.random.default_rng(seed=random_state)
+    # rng = np.random.default_rng(seed=random_state)
     inter_indices = np.where(inter_mask)[0]
-    rng.shuffle(inter_indices)
+    # rng.shuffle(inter_indices)
 
     # Divide interictal into n_splits chunks
     inter_chunks = np.array_split(inter_indices, n_splits)

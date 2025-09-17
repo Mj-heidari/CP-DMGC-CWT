@@ -38,6 +38,12 @@ class Trainer:
         for X, y in tqdm(train_loader, desc="Training", leave=False):
             X, y = X.to(self.device), y.to(self.device)
 
+            # X: (batch, channels, data_points)
+            mean = X.mean(dim=(0, 2), keepdim=True)   # mean per channel
+            std = X.std(dim=(0, 2), keepdim=True)     # std per channel
+
+            X = (X - mean) / (std + 1e-6)  # avoid div by 0
+
             optimizer.zero_grad()
             if self.model.__class__.__name__ == 'CE_stSENet':
                 X = X.unsqueeze(2)
@@ -64,6 +70,13 @@ class Trainer:
         with torch.no_grad():
             for X, y in tqdm(loader, desc="Evaluating", leave=False):
                 X, y = X.to(self.device), y.to(self.device)
+
+                # X: (batch, channels, data_points)
+                mean = X.mean(dim=(0, 2), keepdim=True)   # mean per channel
+                std = X.std(dim=(0, 2), keepdim=True)     # std per channel
+
+                X = (X - mean) / (std + 1e-6)  # avoid div by 0
+        
                 if self.model.__class__.__name__ == 'CE_stSENet':
                     X = X.unsqueeze(2)
                 elif self.model.__class__.__name__ == 'EEGNet':
@@ -227,7 +240,7 @@ if __name__ == "__main__":
         model_builder=builder,
         batch_size=64,
         lr=1e-3,
-        epochs=20,
+        epochs=5,
     )
 
     # Final summary
