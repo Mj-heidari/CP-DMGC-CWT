@@ -50,6 +50,8 @@ class Trainer:
             elif self.model.__class__.__name__ == 'EEGNet':
                 X = X.unsqueeze(1)
             outputs = self.model(X)
+            if len(outputs.shape) == 1:
+                outputs = outputs.unsqueeze(0)
             loss = self.criterion(outputs, y)
             loss.backward()
             optimizer.step()
@@ -82,6 +84,8 @@ class Trainer:
                 elif self.model.__class__.__name__ == 'EEGNet':
                     X = X.unsqueeze(1)
                 outputs = self.model(X)
+                if len(outputs.shape) == 1:
+                    outputs = outputs.unsqueeze(0)
                 loss = self.criterion(outputs, y)
 
                 total_loss += loss.item() * X.size(0)
@@ -109,6 +113,8 @@ def run_nested_cv(dataset, model_builder,
     """
     device = "cuda" if torch.cuda.is_available() else "cpu"
     all_results = []
+
+
 
     for fold, (train_val_dataset, test_dataset) in enumerate(leave_one_preictal_group_out(dataset)):
         print(f"\n===== Outer Fold {fold+1} =====")        
