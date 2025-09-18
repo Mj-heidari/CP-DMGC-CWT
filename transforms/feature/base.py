@@ -1,17 +1,18 @@
 import numpy as np
-from ..base import BaseTransform
 
-class FeatureTransform(BaseTransform):
-    """Signal → Feature transforms."""
-    def __call__(self, eeg, **kwargs):
+
+class FeatureTransform:
+    """Base class for all feature transforms."""
+
+    def __call__(self, eeg: np.ndarray, **kwargs) -> np.ndarray:
         return self.apply(eeg, **kwargs)
 
-    def apply(self, eeg, **kwargs):
+    def apply(self, eeg: np.ndarray, **kwargs) -> np.ndarray:
         raise NotImplementedError
 
     def aggregate(self, features: np.ndarray, agg_fn=np.mean, axis=0) -> np.ndarray:
         """
-        Aggregate features across channels/trials.
-        Default: mean over channels.
+        Aggregate features across channels.
+        Default is mean over axis=0 (channels).
         """
-        return agg_fn(features, axis=axis)
+        return agg_fn(features, axis=axis, keepdims=True)
