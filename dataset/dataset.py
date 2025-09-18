@@ -113,6 +113,9 @@ def leave_one_preictal_group_out(dataset, method="kfold", shuffle=True, random_s
 
     if method == "kfold":
         n_splits = len(pre_groups)
+        if shuffle:
+            rng = np.random.default_rng(seed=random_state)
+            rng.shuffle(inter_indices)
         chunks = np.array_split(inter_indices, n_splits)
         for i, group in enumerate(pre_groups):
             inter_chunks[group] = chunks[i]
@@ -171,9 +174,5 @@ def leave_one_preictal_group_out(dataset, method="kfold", shuffle=True, random_s
 
         train_idx = np.concatenate([pre_train_idx, inter_train_idx]).tolist()
         test_idx = np.concatenate([pre_test_idx, inter_test_idx]).tolist()
-
-        if shuffle:
-            rng = np.random.default_rng(seed=random_state)
-            rng.shuffle(train_idx)
 
         yield Subset(dataset, train_idx), Subset(dataset, test_idx)
