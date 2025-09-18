@@ -38,12 +38,6 @@ class Trainer:
         for X, y in tqdm(train_loader, desc="Training", leave=False):
             X, y = X.to(self.device), y.to(self.device)
 
-            # X: (batch, channels, data_points)
-            mean = X.mean(dim=(0, 2), keepdim=True)   # mean per channel
-            std = X.std(dim=(0, 2), keepdim=True)     # std per channel
-
-            X = (X - mean) / (std + 1e-6)  # avoid div by 0
-
             optimizer.zero_grad()
             if self.model.__class__.__name__ == 'CE_stSENet':
                 X = X.unsqueeze(2)
@@ -116,13 +110,13 @@ def run_nested_cv(dataset, model_builder,
 
 
 
-    for fold, (train_val_dataset, test_dataset) in enumerate(leave_one_preictal_group_out(dataset)):
+    for fold, (train_val_dataset, test_dataset) in enumerate(leave_one_preictal_group_out(dataset, shuffle=False)):
         print(f"\n===== Outer Fold {fold+1} =====")        
 
         test_probs_ensemble = []
         y_test = dataset.y[test_dataset.indices]
 
-        for inner_fold, (train_dataset, val_dataset) in enumerate(leave_one_preictal_group_out(train_val_dataset)):
+        for inner_fold, (train_dataset, val_dataset) in enumerate(leave_one_preictal_group_out(train_val_dataset, shuffle=False)):
             print(f"\n  --- Inner Fold {inner_fold+1} ---")
             train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
             val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
@@ -216,7 +210,7 @@ def model_builder(model_class, **kwargs):
 
 if __name__ == "__main__":
     dataset_dir = "data/BIDS_CHB-MIT"
-    dataset = CHBMITDataset(dataset_dir, offline_transforms=[])
+    dataset = CHBMITDataset(dataset_dir, use_uint16=True, offline_transforms=[])
     model = 'CE-stSENet'
 
     if model == 'EEGNet':
