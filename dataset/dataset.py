@@ -27,7 +27,7 @@ class CHBMITDataset(Dataset):
         subject_dirs = sorted(glob.glob(os.path.join(dataset_dir, f"sub-{subject_id}")))
 
         for subj_path in tqdm(subject_dirs):
-            subj_id = os.path.basename(subj_path)
+            # subj_id = os.path.basename(subj_path)
 
             # Collect all sessions for this subject
             suffix = "*uint16.npz" if use_uint16 else "*segments.npz"
@@ -81,9 +81,7 @@ class CHBMITDataset(Dataset):
         return torch.tensor(x), torch.tensor(y, dtype=torch.long)
 
 
-
-
-def leave_one_preictal_group_out(dataset, shuffle=True, random_state=0):
+def leave_one_preictal_group_out(dataset, method="kfold", shuffle=True, random_state=0):
     """
     Cross-validation splitter:
       - Each fold leaves one preictal group out for testing.
@@ -96,8 +94,6 @@ def leave_one_preictal_group_out(dataset, shuffle=True, random_state=0):
         idx.sort()
         y = base_ds.y[idx]
         group_id = base_ds.group_ids[idx]
-
-
     else:
         y, group_id = dataset.y, dataset.group_ids
 
@@ -109,42 +105,50 @@ def leave_one_preictal_group_out(dataset, shuffle=True, random_state=0):
     pre_groups = np.unique(group_id[pre_mask])
 
     # Indices
-    pre_indices = np.where(pre_mask)[0]
+    # pre_indices = np.where(pre_mask)[0]
     inter_indices = np.where(inter_mask)[0]
 
-    # Compute start/end of each preictal group
-    pre_bounds = []
-    for g in pre_groups:
-        indices = np.where(group_id == g)[0]
-        pre_bounds.append((indices[0], indices[-1]))
-
-    # Assign each interictal sample to nearest preictal group
-    inter_assignment = []
-
-    for idx in inter_indices:
-        # idx is the position in the original dataset
-        if idx <= pre_bounds[0][0]:
-            inter_assignment.append(pre_groups[0])
-        elif idx >= pre_bounds[-1][1]:
-            inter_assignment.append(pre_groups[-1])
-        else:
-            for j in range(len(pre_bounds)-1):
-                mid = (pre_bounds[j][1] + pre_bounds[j+1][0]) // 2
-                if idx <= mid and idx >= pre_bounds[j][1]:
-                    inter_assignment.append(pre_groups[j])
-                    break
-                elif idx > mid and idx <= pre_bounds[j+1][1]:
-                    inter_assignment.append(pre_groups[j+1])
-                    break
-
-    # Group interictal indices by assigned preictal group
+    # split interictal indices
     inter_chunks = defaultdict(list)
-    for idx, assigned_group in zip(inter_indices, inter_assignment):
-        inter_chunks[assigned_group].append(idx)
 
-    for pre_group in pre_groups:
-        if pre_group not in inter_chunks.keys():
-            pre_mask[group_id == pre_group] = 0
+    if method == "kfold":
+        n_splits = len(pre_groups)
+        chunks = np.array_split(inter_indices, n_splits)
+        for i, group in enumerate(pre_groups):
+            inter_chunks[group] = chunks[i]
+    else:
+        # Compute start/end of each preictal group
+        pre_bounds = []
+        for g in pre_groups:
+            indices = np.where(group_id == g)[0]
+            pre_bounds.append((indices[0], indices[-1]))
+
+        # Assign each interictal sample to nearest preictal group
+        inter_assignment = []
+
+        for idx in inter_indices:
+            # idx is the position in the original dataset
+            if idx <= pre_bounds[0][0]:
+                inter_assignment.append(pre_groups[0])
+            elif idx >= pre_bounds[-1][1]:
+                inter_assignment.append(pre_groups[-1])
+            else:
+                for j in range(len(pre_bounds) - 1):
+                    mid = (pre_bounds[j][1] + pre_bounds[j + 1][0]) // 2
+                    if idx <= mid and idx >= pre_bounds[j][1]:
+                        inter_assignment.append(pre_groups[j])
+                        break
+                    elif idx > mid and idx <= pre_bounds[j + 1][1]:
+                        inter_assignment.append(pre_groups[j + 1])
+                        break
+
+        # Group interictal indices by assigned preictal group
+        for idx, assigned_group in zip(inter_indices, inter_assignment):
+            inter_chunks[assigned_group].append(idx)
+
+        for pre_group in pre_groups:
+            if pre_group not in inter_chunks.keys():
+                pre_mask[group_id == pre_group] = 0
 
     # Build folds
     for test_group in inter_chunks.keys():
@@ -158,10 +162,18 @@ def leave_one_preictal_group_out(dataset, shuffle=True, random_state=0):
         # Interictal split for this fold
         inter_test_idx = np.array(inter_chunks[test_group])
         inter_train_idx = np.hstack(
-            [inter_chunks[g] for g in pre_groups if g != test_group and g in inter_chunks.keys()]
-        ).astype('int')
+            [
+                inter_chunks[g]
+                for g in pre_groups
+                if g != test_group and g in inter_chunks.keys()
+            ]
+        ).astype("int")
 
         train_idx = np.concatenate([pre_train_idx, inter_train_idx]).tolist()
         test_idx = np.concatenate([pre_test_idx, inter_test_idx]).tolist()
+
+        if shuffle:
+            rng = np.random.default_rng(seed=random_state)
+            rng.shuffle(train_idx)
 
         yield Subset(dataset, train_idx), Subset(dataset, test_idx)
