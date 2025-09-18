@@ -66,12 +66,6 @@ class Trainer:
         with torch.no_grad():
             for X, y in tqdm(loader, desc="Evaluating", leave=False):
                 X, y = X.to(self.device), y.to(self.device)
-
-                # X: (batch, channels, data_points)
-                mean = X.mean(dim=(0, 2), keepdim=True)   # mean per channel
-                std = X.std(dim=(0, 2), keepdim=True)     # std per channel
-
-                X = (X - mean) / (std + 1e-6)  # avoid div by 0
         
                 if self.model.__class__.__name__ == 'CE_stSENet':
                     X = X.unsqueeze(2)
