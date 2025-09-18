@@ -1,13 +1,12 @@
 import numpy as np
 import mne
 from mne.preprocessing import ICA
-from typing import Tuple, List, Set
-import re
+from typing import Tuple, List, Set, Optional
 import pandas as pd
 
 
 def preprocess_chbmit(
-    raw: mne.io.Raw, only_resample: bool = False, sfreq_new: int = 128, l_freq: float = 0.5, h_freq: float = 40.0
+    raw: mne.io.Raw, only_resample: bool = False, sfreq_new: int = 128, l_freq: float = 0.5, h_freq: float = 40.0, normalize: Optional[str] = "zscore",
 ) -> Tuple[np.ndarray, List[str], int]:
     """
     Preprocessing pipeline for CHB-MIT EEG dataset.
@@ -29,15 +28,13 @@ def preprocess_chbmit(
         Lower frequency bound for bandpass filter, default = 0.5 Hz.
     h_freq : float
         Upper frequency bound for bandpass filter, default = 40 Hz.
+    normalize : {"zscore", "robust", None}
+        Normalization method to apply after resampling. Default is "zscore".
 
     Returns
     -------
-    data : np.ndarray
-        Preprocessed EEG (channels × time).
-    ch_names : List[str]
-        Channel names after preprocessing.
-    components_removed : int
-        Number of ICA components removed.
+    raw_proc : mne.io.Raw
+        The preprocessed Raw object (EEG channels only).
     """
     components_removed = 0
     try:
@@ -84,6 +81,32 @@ def preprocess_chbmit(
 
         # 4. Downsampling
         raw_proc.resample(sfreq_new, npad="auto")
+
+        # 4. Normalization (channel-wise, on whole continuous data)
+        if normalize is not None:
+            data = raw_proc.get_data()  # shape (n_channels, n_times)
+
+            if normalize == "zscore":
+                mean = data.mean(axis=1, keepdims=True)
+                std = data.std(axis=1, keepdims=True)
+                std[std == 0] = 1.0
+                data = (data - mean) / std
+
+            elif normalize == "robust":
+                median = np.median(data, axis=1, keepdims=True)
+                q75 = np.percentile(data, 75, axis=1, keepdims=True)
+                q25 = np.percentile(data, 25, axis=1, keepdims=True)
+                iqr = q75 - q25
+                iqr[iqr == 0] = 1.0
+                data = (data - median) / iqr
+
+            else:
+                raise ValueError(f"Unknown normalization method: {normalize!r}. "
+                                 "Use 'zscore', 'robust', or None.")
+
+            # write normalized data back into the Raw object's buffer (preserve dtype)
+            raw_buf = raw_proc._data
+            raw_buf[...] = data.astype(raw_buf.dtype, copy=False)
 
         return raw_proc
 
