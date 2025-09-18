@@ -112,7 +112,7 @@ def run_nested_cv(dataset, model_builder,
 
 
         if split == 'cross validation':
-            split_method = cross_validation(train_val_dataset)
+            split_method = cross_validation(train_val_dataset, shuffle = False)
         else:
             split_method = leave_one_preictal_group_out(train_val_dataset, shuffle=False)
         
