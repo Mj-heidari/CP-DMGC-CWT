@@ -7,13 +7,14 @@ import os
 from .utils import invert_uint16_scaling
 from tqdm import tqdm
 from collections import defaultdict
+from sklearn.model_selection import StratifiedKFold
 
 
 class CHBMITDataset(Dataset):
     def __init__(
         self,
         dataset_dir: str = "data/BIDS_CHB-MIT",
-        use_uint16: bool = True,
+        use_uint16: bool = False,
         subject_id: str = "01",
         online_transforms: List[Callable] = None,
         offline_transforms: List[Callable] = None,
@@ -175,4 +176,24 @@ def leave_one_preictal_group_out(dataset, method="kfold", shuffle=True, random_s
         train_idx = np.concatenate([pre_train_idx, inter_train_idx]).tolist()
         test_idx = np.concatenate([pre_test_idx, inter_test_idx]).tolist()
 
+        yield Subset(dataset, train_idx), Subset(dataset, test_idx)
+
+def cross_validation(dataset, shuffle=True, n_fold=5, random_state=0): 
+    """
+    Cross-validation splitter:
+      - Splits dataset into n_fold stratified folds based on y.
+      - Handles Dataset and Subset objects.
+    """
+    if isinstance(dataset, Subset):
+        base_ds = dataset.dataset
+        indices = np.array(dataset.indices)
+        indices.sort()
+        y = np.array(base_ds.y)[indices]
+    else:
+        indices = np.arange(len(dataset))
+        y = np.array(dataset.y)
+
+    skf = StratifiedKFold(n_splits=n_fold, shuffle=shuffle, random_state=random_state)
+
+    for train_idx, test_idx in skf.split(np.zeros(len(y)), y):
         yield Subset(dataset, train_idx), Subset(dataset, test_idx)

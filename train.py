@@ -5,7 +5,7 @@ from torch.utils.data import DataLoader
 from sklearn.metrics import roc_auc_score, accuracy_score, classification_report
 from tqdm import tqdm
 from dataset.utils import *
-from dataset.dataset import CHBMITDataset, leave_one_preictal_group_out
+from dataset.dataset import CHBMITDataset, leave_one_preictal_group_out, cross_validation
 
 from models.EEGNet import EEGNet
 from models.CE_stSENet.CE_stSENet import CE_stSENet
@@ -101,7 +101,7 @@ class Trainer:
 
 
 def run_nested_cv(dataset, model_builder, 
-                  batch_size=64, lr=1e-3, epochs=20):
+                  batch_size=64, lr=1e-3, epochs=20, split = 'cross validation'):
     """
     model_builder: function that returns a *new model object*
     """
@@ -116,7 +116,13 @@ def run_nested_cv(dataset, model_builder,
         test_probs_ensemble = []
         y_test = dataset.y[test_dataset.indices]
 
-        for inner_fold, (train_dataset, val_dataset) in enumerate(leave_one_preictal_group_out(train_val_dataset, shuffle=False)):
+
+        if split == 'cross validation':
+            split_method = cross_validation(train_val_dataset)
+        else:
+            split_method = leave_one_preictal_group_out(train_val_dataset, shuffle=False)
+        
+        for inner_fold, (train_dataset, val_dataset) in enumerate(split_method):
             print(f"\n  --- Inner Fold {inner_fold+1} ---")
             train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
             val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
