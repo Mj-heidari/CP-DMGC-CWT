@@ -12,7 +12,7 @@ import glob
 import pandas as pd
 import matplotlib.pyplot as plt
 from collections import Counter
-from typing import Optional
+from typing import Optional, List
 
 
 def process_chbmit_bids_dataset(
@@ -22,6 +22,7 @@ def process_chbmit_bids_dataset(
     apply_ica: bool = True,
     plot: bool = False,
     show_statistics: bool = True,
+    subj_nums: Optional[List[int]] = None,
 ):
     """
     Process all subjects in CHB-MIT (BIDS format) dataset and save per-subject segments and labels.
@@ -43,10 +44,19 @@ def process_chbmit_bids_dataset(
     show_statistics : bool, optional
         If True, print extraction statistics (segments, labels, groups).
         Default is True.
+    subj_nums: Optional[list[int]]
+        A list containing the subject numbers that should be preprocessed.
+        If None, the all subjects will be preprocessed.
+        Default is None.
     """
 
     sessions_pathes = glob.glob(os.path.join(dataset_dir, "*", "*"))
     for session_path in sorted(sessions_pathes):
+        print(session_path)
+        subj_id = session_path.split("\\")[-2].split("-")[-1]
+        if subj_nums is not None and (int(subj_id) not in subj_nums):
+            print("skipping subject id:", subj_id)
+            continue
         edf_files = sorted(glob.glob(session_path + "/eeg/*.edf"))
         raws = []
         for raw_file_path in edf_files:
@@ -111,4 +121,11 @@ def process_chbmit_bids_dataset(
 
 if __name__ == "__main__":
     dataset_dir = "data/BIDS_CHB-MIT"
-    process_chbmit_bids_dataset(dataset_dir)
+    subjects_to_be_preprocessed = [1, 2]
+    process_chbmit_bids_dataset(
+        dataset_dir,
+        save_uint16=True,
+        normalization_method="zscore",
+        apply_ica=True,
+        subj_nums=subjects_to_be_preprocessed,
+    )
