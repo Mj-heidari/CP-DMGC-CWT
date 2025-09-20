@@ -21,6 +21,7 @@ def process_chbmit_bids_dataset(
     normalization_method: Optional[str] = "zscore",
     apply_ica: bool = True,
     plot: bool = False,
+    plot_psd: bool = False,
     show_statistics: bool = True,
     subj_nums: Optional[List[int]] = None,
 ):
@@ -70,11 +71,16 @@ def process_chbmit_bids_dataset(
             raw = preprocess_chbmit(
                 raw, apply_ica=apply_ica, normalize=normalization_method
             )
-
             raws.append(raw)
 
         raw_all = mne.concatenate_raws(raws)
         raw_all = infer_preictal_interactal(raw_all)
+
+        if plot_psd:
+            spectrum = raw_all.compute_psd()
+            fig = spectrum.plot(average=True)
+            fig.savefig(session_path + f"/eeg/psd_plot_{str(normalization_method)}_{str(apply_ica)[0]}.png", dpi=300)
+            plt.close(fig)
 
         # plot the annotation
         if plot:
@@ -128,4 +134,5 @@ if __name__ == "__main__":
         normalization_method="zscore",
         apply_ica=True,
         subj_nums=subjects_to_be_preprocessed,
+        plot_psd=True
     )
