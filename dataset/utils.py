@@ -7,7 +7,6 @@ import pandas as pd
 
 def preprocess_chbmit(
     raw: mne.io.Raw,
-    only_resample: bool = False,
     sfreq_new: int = 128,
     l_freq: float = 0.5,
     h_freq: float = 50.0,
@@ -47,47 +46,46 @@ def preprocess_chbmit(
     components_removed = 0
     try:
         raw_proc = raw.copy().pick_types(eeg=True)
+        
+        # 1. Bandpass filter
+        raw_proc.filter(l_freq, h_freq, fir_design="firwin", phase="zero-double")
 
-        if not only_resample:
-            # 1. Bandpass filter
-            raw_proc.filter(l_freq, h_freq, fir_design="firwin", phase="zero-double")
+        # # 2. Notch filter (60 Hz + harmonics)
+        # raw_proc.notch_filter(np.arange(60, h_freq, 60), fir_design="firwin")
 
-            # # 2. Notch filter (60 Hz + harmonics)
-            # raw_proc.notch_filter(np.arange(60, h_freq, 60), fir_design="firwin")
+        # 3. ICA
+        if apply_ica:
+            ica = ICA(
+                n_components=None,
+                method="fastica",
+                max_iter="auto",
+                random_state=42,
+            )
+            ica.fit(raw_proc, picks="eeg", decim=3)
 
-            # 3. ICA
-            if apply_ica:
-                ica = ICA(
-                    n_components=None,
-                    method="fastica",
-                    max_iter="auto",
-                    random_state=42,
+            exclude = set()
+
+            # Proxy blink detection via frontal channels
+            proxy_candidates = [
+                ch
+                for ch in ["FP1-F7", "FP1-F3", "FP2-F4", "FP2-F8"]
+                if ch in raw_proc.ch_names
+            ]
+            for ch in proxy_candidates:
+                try:
+                    inds, _ = ica.find_bads_eog(raw_proc, ch_name=ch)
+                    exclude.update(inds)
+                except Exception:
+                    pass
+
+            ica.exclude = sorted(exclude)
+            components_removed = len(ica.exclude)
+
+            if components_removed > 0:
+                print(
+                    f"Removing {components_removed} ICA components (blink proxies)"
                 )
-                ica.fit(raw_proc, picks="eeg", decim=3)
-
-                exclude = set()
-
-                # Proxy blink detection via frontal channels
-                proxy_candidates = [
-                    ch
-                    for ch in ["FP1-F7", "FP1-F3", "FP2-F4", "FP2-F8"]
-                    if ch in raw_proc.ch_names
-                ]
-                for ch in proxy_candidates:
-                    try:
-                        inds, _ = ica.find_bads_eog(raw_proc, ch_name=ch)
-                        exclude.update(inds)
-                    except Exception:
-                        pass
-
-                ica.exclude = sorted(exclude)
-                components_removed = len(ica.exclude)
-
-                if components_removed > 0:
-                    print(
-                        f"Removing {components_removed} ICA components (blink proxies)"
-                    )
-                    ica.apply(raw_proc)
+                ica.apply(raw_proc)
 
         # 4. Downsampling
         raw_proc.resample(sfreq_new, npad="auto")

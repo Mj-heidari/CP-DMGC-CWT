@@ -45,7 +45,7 @@ def process_chbmit_bids_dataset(
 
             raw = add_seizure_annotations_bids(raw, annotations)
 
-            raw = preprocess_chbmit(raw, only_resample = True)
+            raw = preprocess_chbmit(raw)
 
             raws.append(raw)
 
