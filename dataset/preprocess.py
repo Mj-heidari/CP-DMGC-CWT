@@ -1,4 +1,10 @@
-from utils import *
+from utils import (
+    add_seizure_annotations_bids,
+    preprocess_chbmit,
+    infer_preictal_interactal,
+    extract_segments_with_labels_bids,
+    scale_to_uint16,
+)
 import os
 import mne
 import numpy as np
@@ -6,12 +12,14 @@ import glob
 import pandas as pd
 import matplotlib.pyplot as plt
 from collections import Counter
-
+from typing import Optional
 
 
 def process_chbmit_bids_dataset(
     dataset_dir: str,
     save_uint16: bool = False,
+    normalization_method: Optional[str] = "zscore",
+    apply_ica: bool = True,
     plot: bool = False,
     show_statistics: bool = True,
 ):
@@ -25,6 +33,10 @@ def process_chbmit_bids_dataset(
     save_uint16 : bool, optional
         If True, saves EEG data scaled to uint16 with per-sample min/max for reconstruction.
         Default is False (save as float32).
+    normalization_method: {"zscore", "robust", None}
+        Normalization method to apply after resampling. Default is "zscore".
+    apply_ica: bool
+        If true, the ica will be applied, default = True.
     plot : bool, optional
         If True, plot raw data with annotations before segmentation.
         Default is False.
@@ -45,13 +57,14 @@ def process_chbmit_bids_dataset(
 
             raw = add_seizure_annotations_bids(raw, annotations)
 
-            raw = preprocess_chbmit(raw)
+            raw = preprocess_chbmit(
+                raw, apply_ica=apply_ica, normalize=normalization_method
+            )
 
             raws.append(raw)
 
         raw_all = mne.concatenate_raws(raws)
         raw_all = infer_preictal_interactal(raw_all)
-
 
         # plot the annotation
         if plot:
@@ -61,7 +74,6 @@ def process_chbmit_bids_dataset(
         X, y, group_ids = extract_segments_with_labels_bids(
             raw_all, segment_sec=5, overlap=0.0, keep_labels={"preictal", "interictal"}
         )
-
 
         if show_statistics:
             # --- Print statistics ---
@@ -79,7 +91,8 @@ def process_chbmit_bids_dataset(
         if save_uint16:
             X, scales = scale_to_uint16(X)
             np.savez_compressed(
-                session_path + "/eeg/processed_segments_uint16.npz",
+                session_path
+                + f"/eeg/processed_segments_{str(normalization_method)}_{str(apply_ica)[0]}_uint16.npz",
                 X=X,
                 y=y,
                 group_ids=group_ids,
@@ -88,11 +101,13 @@ def process_chbmit_bids_dataset(
         else:
             X = X.astype(np.float32)
             np.savez_compressed(
-                session_path + "/eeg/processed_segments.npz",
+                session_path
+                + f"/eeg/processed_segments_{str(normalization_method)}_{str(apply_ica)[0]}_float.npz",
                 X=X,
                 y=y,
                 group_ids=group_ids,
             )
+
 
 if __name__ == "__main__":
     dataset_dir = "data/BIDS_CHB-MIT"
