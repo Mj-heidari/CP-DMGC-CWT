@@ -6,7 +6,13 @@ import pandas as pd
 
 
 def preprocess_chbmit(
-    raw: mne.io.Raw, only_resample: bool = False, sfreq_new: int = 128, l_freq: float = 0.5, h_freq: float = 40.0, normalize: Optional[str] = "zscore",
+    raw: mne.io.Raw,
+    only_resample: bool = False,
+    sfreq_new: int = 128,
+    l_freq: float = 0.5,
+    h_freq: float = 50.0,
+    apply_ica: bool = True,
+    normalize: Optional[str] = "zscore",
 ) -> Tuple[np.ndarray, List[str], int]:
     """
     Preprocessing pipeline for CHB-MIT EEG dataset.
@@ -27,7 +33,9 @@ def preprocess_chbmit(
     l_freq : float
         Lower frequency bound for bandpass filter, default = 0.5 Hz.
     h_freq : float
-        Upper frequency bound for bandpass filter, default = 40 Hz.
+        Upper frequency bound for bandpass filter, default = 50 Hz.
+    apply_ica: bool
+        if true the ica will be applied, default = True.
     normalize : {"zscore", "robust", None}
         Normalization method to apply after resampling. Default is "zscore".
 
@@ -41,7 +49,6 @@ def preprocess_chbmit(
         raw_proc = raw.copy().pick_types(eeg=True)
 
         if not only_resample:
-            
             # 1. Bandpass filter
             raw_proc.filter(l_freq, h_freq, fir_design="firwin", phase="zero-double")
 
@@ -49,35 +56,38 @@ def preprocess_chbmit(
             # raw_proc.notch_filter(np.arange(60, h_freq, 60), fir_design="firwin")
 
             # 3. ICA
-            ica = ICA(
-                n_components=None,
-                method="fastica",
-                max_iter="auto",
-                random_state=42,
-            )
-            ica.fit(raw_proc, picks="eeg", decim=3)
+            if apply_ica:
+                ica = ICA(
+                    n_components=None,
+                    method="fastica",
+                    max_iter="auto",
+                    random_state=42,
+                )
+                ica.fit(raw_proc, picks="eeg", decim=3)
 
-            exclude = set()
+                exclude = set()
 
-            # Proxy blink detection via frontal channels
-            proxy_candidates = [
-                ch
-                for ch in ["FP1-F7", "FP1-F3", "FP2-F4", "FP2-F8"]
-                if ch in raw_proc.ch_names
-            ]
-            for ch in proxy_candidates:
-                try:
-                    inds, _ = ica.find_bads_eog(raw_proc, ch_name=ch)
-                    exclude.update(inds)
-                except Exception:
-                    pass
+                # Proxy blink detection via frontal channels
+                proxy_candidates = [
+                    ch
+                    for ch in ["FP1-F7", "FP1-F3", "FP2-F4", "FP2-F8"]
+                    if ch in raw_proc.ch_names
+                ]
+                for ch in proxy_candidates:
+                    try:
+                        inds, _ = ica.find_bads_eog(raw_proc, ch_name=ch)
+                        exclude.update(inds)
+                    except Exception:
+                        pass
 
-            ica.exclude = sorted(exclude)
-            components_removed = len(ica.exclude)
+                ica.exclude = sorted(exclude)
+                components_removed = len(ica.exclude)
 
-            if components_removed > 0:
-                print(f"Removing {components_removed} ICA components (blink proxies)")
-                ica.apply(raw_proc)
+                if components_removed > 0:
+                    print(
+                        f"Removing {components_removed} ICA components (blink proxies)"
+                    )
+                    ica.apply(raw_proc)
 
         # 4. Downsampling
         raw_proc.resample(sfreq_new, npad="auto")
@@ -101,8 +111,10 @@ def preprocess_chbmit(
                 data = (data - median) / iqr
 
             else:
-                raise ValueError(f"Unknown normalization method: {normalize!r}. "
-                                 "Use 'zscore', 'robust', or None.")
+                raise ValueError(
+                    f"Unknown normalization method: {normalize!r}."
+                    "Use 'zscore', 'robust', or None."
+                )
 
             # write normalized data back into the Raw object's buffer (preserve dtype)
             raw_buf = raw_proc._data
@@ -112,6 +124,7 @@ def preprocess_chbmit(
 
     except Exception as e:
         raise RuntimeError(f"Preprocessing failed: {str(e)}")
+
 
 def add_seizure_annotations_bids(
     raw: mne.io.Raw, annotations_df: pd.DataFrame
@@ -158,7 +171,10 @@ def add_seizure_annotations_bids(
         raw.set_annotations(annotations)
     return raw
 
-def infer_preictal_interactal(raw: mne.io.Raw, dynamic_preictal: bool = False, SPE: int = 0) -> mne.io.Raw:
+
+def infer_preictal_interactal(
+    raw: mne.io.Raw, dynamic_preictal: bool = False, SPE: int = 0
+) -> mne.io.Raw:
     """
     Infer preictal and interictal periods in the Raw object based on seizure annotations.
 
@@ -172,7 +188,7 @@ def infer_preictal_interactal(raw: mne.io.Raw, dynamic_preictal: bool = False, S
     SPE : int, optional
         Seizure Prediction Horizon (in seconds). The preictal period will end at (onset - SPE).
         Default is 0.
-        
+
     Returns
     -------
     raw : mne.io.Raw
@@ -232,7 +248,11 @@ def infer_preictal_interactal(raw: mne.io.Raw, dynamic_preictal: bool = False, S
             }
             if dynamic_preictal:
                 for annot in new_annotations:
-                    if annot["onset"] < preictal_start < annot["onset"] + annot["duration"]:
+                    if (
+                        annot["onset"]
+                        < preictal_start
+                        < annot["onset"] + annot["duration"]
+                    ):
                         new_annot["duration"] = preictal_end - (
                             annot["onset"] + annot["duration"]
                         )
@@ -245,7 +265,6 @@ def infer_preictal_interactal(raw: mne.io.Raw, dynamic_preictal: bool = False, S
                     "description": "preictal",
                 }
             )
-
 
             # exclude the SPE gap
             if SPE > 0 and preictal_end < onset:
@@ -329,6 +348,7 @@ def infer_preictal_interactal(raw: mne.io.Raw, dynamic_preictal: bool = False, S
 
     return raw
 
+
 def extract_segments_with_labels_bids(
     raw: mne.io.Raw,
     segment_sec: float = 5.0,
@@ -363,9 +383,9 @@ def extract_segments_with_labels_bids(
     ann_counter = {lab: 0 for lab in keep_labels}  # counter for each label
 
     for idx, (desc, onset, duration) in enumerate(
-        zip(raw.annotations.description,
-            raw.annotations.onset,
-            raw.annotations.duration)
+        zip(
+            raw.annotations.description, raw.annotations.onset, raw.annotations.duration
+        )
     ):
         if desc not in keep_labels:
             continue
@@ -377,7 +397,7 @@ def extract_segments_with_labels_bids(
             duration=segment_sec,
             overlap=overlap,
             preload=True,
-            reject_by_annotation=True  # ensures BAD/EDGE are dropped
+            reject_by_annotation=True,  # ensures BAD/EDGE are dropped
         )
 
         # Assign group ID for this block (useful for CV splitting later)
@@ -397,6 +417,7 @@ def extract_segments_with_labels_bids(
     group_ids = np.array(group_ids)
 
     return X, y, group_ids
+
 
 def scale_to_uint16(X: np.ndarray):
     """
@@ -434,6 +455,7 @@ def scale_to_uint16(X: np.ndarray):
 
     return X_uint16, scales
 
+
 def invert_uint16_scaling(X_uint16: np.ndarray, scales: np.ndarray) -> np.ndarray:
     """
     Reconstruct float32 EEG data from uint16 scaled values.
@@ -457,7 +479,9 @@ def invert_uint16_scaling(X_uint16: np.ndarray, scales: np.ndarray) -> np.ndarra
         x_uint16 = X_uint16[i].astype(np.float32)
         x_min, x_max = scales[i]
         if x_max == x_min:  # flat signal case
-            X_reconstructed[i] = np.full_like(x_uint16, fill_value=x_min, dtype=np.float32)
+            X_reconstructed[i] = np.full_like(
+                x_uint16, fill_value=x_min, dtype=np.float32
+            )
         else:
             X_reconstructed[i] = (x_uint16 / 65535.0) * (x_max - x_min) + x_min
 
