@@ -5,7 +5,7 @@ from torch.utils.data import DataLoader
 from sklearn.metrics import roc_auc_score, accuracy_score, classification_report
 from tqdm import tqdm
 from dataset.utils import *
-from dataset.dataset import CHBMITDataset, leave_one_preictal_group_out, cross_validation
+from dataset.dataset import CHBMITDataset, make_cv_splitter
 
 from models.EEGNet import EEGNet
 from models.CE_stSENet.CE_stSENet import CE_stSENet
@@ -94,30 +94,61 @@ class Trainer:
         return avg_loss, acc, auc, report, np.array(all_probs), np.array(all_preds), np.array(all_labels)
 
 
-def run_nested_cv(dataset, model_builder, 
-                  batch_size=64, lr=1e-3, epochs=20, split = 'cross validation'):
+def run_nested_cv(
+    dataset,
+    model_builder,
+    batch_size=64,
+    lr=1e-3,
+    epochs=20,
+    outer_cv_params=None,
+    inner_cv_params=None,
+):
     """
-    model_builder: function that returns a *new model object*
+    Perform nested cross-validation with configurable outer and inner CV splitters.
+
+    Parameters
+    ----------
+    dataset : Dataset
+        Full dataset.
+
+    model_builder : callable
+        Function that returns a *new model object* each call.
+
+    batch_size : int, default=64
+    lr : float, default=1e-3
+    epochs : int, default=20
+
+    outer_cv_params : dict, optional
+        Parameters for the outer CV splitter.
+        Example:
+            {"mode": "leave_one_preictal", "method": "balanced", "random_state": 0}
+
+    inner_cv_params : dict, optional
+        Parameters for the inner CV splitter.
+        Example:
+            {"mode": "stratified", "n_fold": 5, "shuffle": False}
     """
     device = "cuda" if torch.cuda.is_available() else "cpu"
     all_results = []
 
+    # Default configs
+    if outer_cv_params is None:
+        outer_cv_params = {"mode": "leave_one_preictal", "method": "balanced", "random_state": 0}
+    if inner_cv_params is None:
+        inner_cv_params = {"mode": "stratified", "n_fold": 5, "shuffle": False, "random_state": 0}
 
-
-    for fold, (train_val_dataset, test_dataset) in enumerate(leave_one_preictal_group_out(dataset, shuffle=False)):
-        print(f"\n===== Outer Fold {fold+1} =====")        
+    # Outer CV
+    for fold, (train_val_dataset, test_dataset) in enumerate(make_cv_splitter(dataset, **outer_cv_params)):
+        print(f"\n===== Outer Fold {fold+1} =====")
 
         test_probs_ensemble = []
         y_test = dataset.y[test_dataset.indices]
 
+        # Inner CV
+        for inner_fold, (train_dataset, val_dataset) in enumerate(make_cv_splitter(train_val_dataset, **inner_cv_params)):
+            print(f"  Inner Fold {inner_fold+1}")
+            # train on train_dataset, validate on val_dataset
 
-        if split == 'cross validation':
-            split_method = cross_validation(train_val_dataset, shuffle = False)
-        else:
-            split_method = leave_one_preictal_group_out(train_val_dataset, shuffle=False)
-        
-        for inner_fold, (train_dataset, val_dataset) in enumerate(split_method):
-            print(f"\n  --- Inner Fold {inner_fold+1} ---")
             train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
             val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
             test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
@@ -234,14 +265,24 @@ if __name__ == "__main__":
             si=128,
         )
 
+    outer_cv_params = {
+        "mode": "leave_one_preictal",
+        "method": "balanced",
+        "random_state": 42,
+    }
+
+    inner_cv_params = {
+        "mode": "stratified",
+        "n_fold": 5,
+        "shuffle": False,
+        "random_state": 42,
+    }
+
     # Run nested CV for this subject
-    results = run_nested_cv(
-        dataset=dataset,
-        model_builder=builder,
-        batch_size=64,
-        lr=1e-3,
-        epochs=5,
-    )
+    results = run_nested_cv(dataset, model_builder,
+                batch_size=64, lr=1e-3, epochs=5,
+                outer_cv_params=outer_cv_params,
+                inner_cv_params=inner_cv_params)
 
     # Final summary
     print("\n\n==== Overall Results Across Subjects ====")

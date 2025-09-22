@@ -82,13 +82,62 @@ class CHBMITDataset(Dataset):
         return torch.tensor(x), torch.tensor(y, dtype=torch.long)
 
 
-def leave_one_preictal_group_out(dataset, method="kfold", shuffle=True, random_state=0):
+def leave_one_preictal_group_out(dataset, method="balanced", random_state=0):
     """
-    Cross-validation splitter:
-      - Each fold leaves one preictal group out for testing.
-      - Remaining preictal groups go to training.
-      - Interictal samples are split into the same number of folds.
+    Cross-validation splitter for seizure prediction datasets.
+
+    In each fold:
+      - One preictal group (seizure event) is held out for testing.
+      - Remaining preictal groups are used for training.
+      - Interictal (non-seizure) samples are partitioned among folds
+        according to the selected method.
+
+    Parameters
+    ----------
+    dataset : Dataset or Subset
+        A dataset with attributes:
+          - y : array-like of shape (n_samples,)
+                Binary labels (1 = preictal, 0 = interictal).
+          - group_ids : array-like of shape (n_samples,)
+                Identifiers for preictal groups (all samples from the same
+                seizure share the same ID).
+
+    method : {"balanced", "balanced_shuffled", "nearest"}, default="balanced"
+        Strategy to assign interictal samples to folds:
+          - "balanced":
+              Interictal samples are split into N equal parts,
+              where N = number of preictal groups.
+              Each part is assigned to one group.
+          - "balanced_shuffled":
+              Same as "balanced", but interictal samples are shuffled
+              randomly before splitting. Shuffling is controlled by
+              `random_state` for reproducibility.
+          - "nearest":
+              Each interictal sample is assigned to the closest preictal
+              group based on temporal order. Samples before the first seizure
+              go to the first group, after the last seizure to the last group,
+              and in between to the nearer of the two surrounding seizures.
+
+    random_state : int, default=0
+        Random seed for reproducible shuffling (used only if
+        method="balanced_shuffled").
+
+    Yields
+    ------
+    (train_subset, test_subset) : tuple of torch.utils.data.Subset
+        - train_subset: all preictal samples except the test group, plus
+          interictal samples assigned to the remaining groups.
+        - test_subset: preictal samples of the held-out group, plus
+          interictal samples assigned to that group.
+
+    Example
+    -------
+    >>> for train_set, test_set in leave_one_preictal_group_out(dataset, method="nearest"):
+    ...     # train model on train_set
+    ...     # evaluate on test_set
     """
+
+
     if isinstance(dataset, torch.utils.data.Subset):
         base_ds = dataset.dataset
         idx = dataset.indices
@@ -112,9 +161,9 @@ def leave_one_preictal_group_out(dataset, method="kfold", shuffle=True, random_s
     # split interictal indices
     inter_chunks = defaultdict(list)
 
-    if method == "kfold":
+    if method == "balanced" or method == 'balanced_shuffled':
         n_splits = len(pre_groups)
-        if shuffle:
+        if method == 'balanced_shuffled':
             rng = np.random.default_rng(seed=random_state)
             rng.shuffle(inter_indices)
         chunks = np.array_split(inter_indices, n_splits)
@@ -178,7 +227,7 @@ def leave_one_preictal_group_out(dataset, method="kfold", shuffle=True, random_s
 
         yield Subset(dataset, train_idx), Subset(dataset, test_idx)
 
-def cross_validation(dataset, shuffle=True, n_fold=5, random_state=0): 
+def cross_validation(dataset, shuffle=False, n_fold=5, random_state=0): 
     """
     Cross-validation splitter:
       - Splits dataset into n_fold stratified folds based on y.
@@ -197,3 +246,32 @@ def cross_validation(dataset, shuffle=True, n_fold=5, random_state=0):
 
     for train_idx, test_idx in skf.split(np.zeros(len(y)), y):
         yield Subset(dataset, train_idx), Subset(dataset, test_idx)
+
+def make_cv_splitter(dataset, mode="stratified", **kwargs):
+    """
+    Wrapper for cross-validation splitters.
+
+    Parameters
+    ----------
+    dataset : Dataset or Subset
+        Input dataset.
+
+    mode : {"stratified", "leave_one_preictal"}
+        - "stratified": Standard stratified K-fold CV.
+        - "leave_one_preictal": Leave-one-preictal-group-out CV.
+
+    kwargs : dict
+        Extra arguments passed to the underlying splitter:
+        - For "stratified": shuffle, n_fold, random_state
+        - For "leave_one_preictal": method, random_state
+
+    Yields
+    ------
+    (train_subset, test_subset) : tuple of Subset
+    """
+    if mode == "stratified":
+        return cross_validation(dataset, **kwargs)
+    elif mode == "leave_one_preictal":
+        return leave_one_preictal_group_out(dataset, **kwargs)
+    else:
+        raise ValueError(f"Unknown mode: {mode}")
