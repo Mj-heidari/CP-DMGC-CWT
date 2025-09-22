@@ -143,6 +143,7 @@ def leave_one_preictal_group_out(dataset, method="balanced", random_state=0):
         idx = dataset.indices
         idx.sort()
         y = base_ds.y[idx]
+        dataset.y = y
         group_id = base_ds.group_ids[idx]
     else:
         y, group_id = dataset.y, dataset.group_ids
