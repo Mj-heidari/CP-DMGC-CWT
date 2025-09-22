@@ -18,6 +18,7 @@ class CHBMITDataset(Dataset):
         subject_id: str = "01",
         online_transforms: List[Callable] = None,
         offline_transforms: List[Callable] = None,
+        suffix: str = "zscore_T",
     ):
         """
         Args:
@@ -31,7 +32,7 @@ class CHBMITDataset(Dataset):
             # subj_id = os.path.basename(subj_path)
 
             # Collect all sessions for this subject
-            suffix = "*uint16.npz" if use_uint16 else "*segments.npz"
+            suffix = f"*{suffix}_uint16.npz" if use_uint16 else f"*{suffix}_float.npz"
             ses_paths = glob.glob(os.path.join(subj_path, "ses-*", "eeg", suffix))
             if ses_paths == []:
                 continue
@@ -137,7 +138,6 @@ def leave_one_preictal_group_out(dataset, method="balanced", random_state=0):
     ...     # evaluate on test_set
     """
 
-
     if isinstance(dataset, torch.utils.data.Subset):
         base_ds = dataset.dataset
         idx = dataset.indices
@@ -161,9 +161,9 @@ def leave_one_preictal_group_out(dataset, method="balanced", random_state=0):
     # split interictal indices
     inter_chunks = defaultdict(list)
 
-    if method == "balanced" or method == 'balanced_shuffled':
+    if method == "balanced" or method == "balanced_shuffled":
         n_splits = len(pre_groups)
-        if method == 'balanced_shuffled':
+        if method == "balanced_shuffled":
             rng = np.random.default_rng(seed=random_state)
             rng.shuffle(inter_indices)
         chunks = np.array_split(inter_indices, n_splits)
@@ -227,7 +227,8 @@ def leave_one_preictal_group_out(dataset, method="balanced", random_state=0):
 
         yield Subset(dataset, train_idx), Subset(dataset, test_idx)
 
-def cross_validation(dataset, shuffle=False, n_fold=5, random_state=0): 
+
+def cross_validation(dataset, shuffle=False, n_fold=5, random_state=0):
     """
     Cross-validation splitter:
       - Splits dataset into n_fold stratified folds based on y.
@@ -242,10 +243,13 @@ def cross_validation(dataset, shuffle=False, n_fold=5, random_state=0):
         indices = np.arange(len(dataset))
         y = np.array(dataset.y)
 
+    if not shuffle:
+        random_state = None
     skf = StratifiedKFold(n_splits=n_fold, shuffle=shuffle, random_state=random_state)
 
     for train_idx, test_idx in skf.split(np.zeros(len(y)), y):
         yield Subset(dataset, train_idx), Subset(dataset, test_idx)
+
 
 def make_cv_splitter(dataset, mode="stratified", **kwargs):
     """

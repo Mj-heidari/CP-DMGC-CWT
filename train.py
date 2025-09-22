@@ -241,7 +241,7 @@ def model_builder(model_class, **kwargs):
 
 if __name__ == "__main__":
     dataset_dir = "data/BIDS_CHB-MIT"
-    dataset = CHBMITDataset(dataset_dir, use_uint16=True, offline_transforms=[])
+    dataset = CHBMITDataset(dataset_dir, use_uint16=True, offline_transforms=[], suffix="zscore_T", subject_id="02")
     model = 'CE-stSENet'
 
     if model == 'EEGNet':
@@ -279,7 +279,7 @@ if __name__ == "__main__":
     }
 
     # Run nested CV for this subject
-    results = run_nested_cv(dataset, model_builder,
+    results = run_nested_cv(dataset, builder,
                 batch_size=64, lr=1e-3, epochs=5,
                 outer_cv_params=outer_cv_params,
                 inner_cv_params=inner_cv_params)
