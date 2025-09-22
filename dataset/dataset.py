@@ -239,6 +239,7 @@ def cross_validation(dataset, shuffle=False, n_fold=5, random_state=0):
         indices = np.array(dataset.indices)
         indices.sort()
         y = np.array(base_ds.y)[indices]
+        dataset.y = y
     else:
         indices = np.arange(len(dataset))
         y = np.array(dataset.y)

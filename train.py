@@ -4,7 +4,6 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 from sklearn.metrics import roc_auc_score, accuracy_score, classification_report
 from tqdm import tqdm
-from dataset.utils import *
 from dataset.dataset import CHBMITDataset, make_cv_splitter
 
 from models.EEGNet import EEGNet
@@ -156,7 +155,7 @@ def run_nested_cv(
             # Model & trainer
             model = model_builder()
             trainer = Trainer(model, device=device)
-            trainer.set_loss_weights(dataset.y[train_dataset.indices])
+            trainer.set_loss_weights(train_val_dataset.y[train_dataset.indices])
 
             optimizer = optim.Adam(model.parameters(), lr=lr)
             scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.5)
