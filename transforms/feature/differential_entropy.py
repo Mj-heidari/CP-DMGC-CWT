@@ -82,12 +82,8 @@ class BandDifferentialEntropy(BandTransform):
         return 0.5 * np.log2(2 * np.pi * np.e * np.var(eeg, axis= -1))
 
 if __name__ == "__main__":
+    eeg = np.random.randn(8, 128 * 5)  # 8 channels, 5 seconds at 128 Hz
+
     transform = BandDifferentialEntropy(sampling_rate=128, order=5)
-    import time
-    start = time.time()
-    for i in range(100):
-        eeg = np.random.randn(18,128*5)
-        result = transform(eeg=eeg)
-    end = time.time()
-    print("elapsed time:", (end-start)*1000)
-    print(result.shape)
+    result = transform(eeg=eeg)
+    print(f"BandDifferentialEntropy: {result.shape}\n{result}")

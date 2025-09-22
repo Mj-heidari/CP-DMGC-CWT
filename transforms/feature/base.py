@@ -16,3 +16,13 @@ class FeatureTransform:
         Default is mean over axis=0 (channels).
         """
         return agg_fn(features, axis=axis, keepdims=True)
+
+if __name__ == "__main__":
+    from base import FeatureTransform
+
+    class Dummy(FeatureTransform):
+        def __call__(self, eeg, **kwargs):
+            return eeg
+
+    eeg = np.random.randn(2, 100)
+    print("FeatureTransform subclass works:", Dummy()(eeg).shape)

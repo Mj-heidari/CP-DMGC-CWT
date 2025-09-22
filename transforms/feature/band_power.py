@@ -1,6 +1,6 @@
 import numpy as np
 from scipy.signal import welch
-from .base import FeatureTransform
+from base import FeatureTransform
 
 
 class BandPowerTransform(FeatureTransform):
@@ -38,3 +38,14 @@ class BetaPower(BandPowerTransform):
 
 class GammaPower(BandPowerTransform):
     def __init__(self, sampling_rate=128): super().__init__(30, 45, sampling_rate)
+
+if __name__ == "__main__":
+    eeg = np.random.randn(4, 512)  # 4 channels, 512 samples
+
+    transforms = [
+        DeltaPower(), ThetaPower(), AlphaPower(), BetaPower(), GammaPower()
+    ]
+
+    for t in transforms:
+        result = t(eeg)
+        print(f"{t.__class__.__name__}: {result.shape}\n{result}")

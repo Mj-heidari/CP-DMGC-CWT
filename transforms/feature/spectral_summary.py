@@ -1,6 +1,6 @@
 import numpy as np
 from scipy.signal import welch
-from .base import FeatureTransform
+from base import FeatureTransform
 
 
 class SpectralStatTransform(FeatureTransform):
@@ -38,3 +38,17 @@ class SpectralEdgeFrequency(SpectralStatTransform):
 class PeakFrequency(SpectralStatTransform):
     def opt(self, f, Pxx):
         return float(f[np.argmax(Pxx)])
+
+if __name__ == "__main__":
+    eeg = np.random.randn(4, 512)
+
+    transforms = [
+        SpectralEntropy(),
+        IntensityWeightedMeanFrequency(),
+        SpectralEdgeFrequency(),
+        PeakFrequency()
+    ]
+
+    for t in transforms:
+        result = t(eeg)
+        print(f"{t.__class__.__name__}: {result.shape}\n{result}")

@@ -1,5 +1,5 @@
 import numpy as np
-from .base import FeatureTransform
+from base import FeatureTransform
 
 
 class BasicStatTransform(FeatureTransform):
@@ -52,3 +52,16 @@ class HjorthComplexity(BasicStatTransform):
         num = np.sqrt(np.var(np.diff(np.diff(x))) / (np.var(np.diff(x)) + 1e-8))
         den = np.sqrt(np.var(np.diff(x)) / (np.var(x) + 1e-8))
         return float(num / (den + 1e-8))
+
+if __name__ == "__main__":
+    eeg = np.random.randn(4, 128)  # 4 channels, 128 samples
+
+    transforms = [
+        MeanAmplitude(), StandardDeviation(), Skewness(), Kurtosis(),
+        RootMeanSquare(), LineLength(), ZeroCrossingRate(),
+        HjorthActivity(), HjorthMobility(), HjorthComplexity()
+    ]
+
+    for t in transforms:
+        result = t(eeg)
+        print(f"{t.__class__.__name__}: {result.shape}\n{result}")
