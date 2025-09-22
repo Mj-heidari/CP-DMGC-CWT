@@ -20,6 +20,7 @@ def process_chbmit_bids_dataset(
     save_uint16: bool = False,
     normalization_method: Optional[str] = "zscore",
     apply_ica: bool = True,
+    apply_filter: bool = True,
     plot: bool = False,
     plot_psd: bool = False,
     show_statistics: bool = True,
@@ -69,7 +70,7 @@ def process_chbmit_bids_dataset(
             raw = add_seizure_annotations_bids(raw, annotations)
 
             raw = preprocess_chbmit(
-                raw, apply_ica=apply_ica, normalize=normalization_method
+                raw, apply_ica=apply_ica, apply_filter=apply_filter, normalize=normalization_method
             )
             raws.append(raw)
 
@@ -79,7 +80,7 @@ def process_chbmit_bids_dataset(
         if plot_psd:
             spectrum = raw_all.compute_psd()
             fig = spectrum.plot(average=True)
-            fig.savefig(session_path + f"/eeg/psd_plot_{str(normalization_method)}_{str(apply_ica)[0]}.png", dpi=300)
+            fig.savefig(session_path + f"/eeg/psd_plot_{str(normalization_method)}_{str(apply_ica)[0]}_{str(apply_filter)[0]}.png", dpi=300)
             plt.close(fig)
 
         # plot the annotation
@@ -108,7 +109,7 @@ def process_chbmit_bids_dataset(
             X, scales = scale_to_uint16(X)
             np.savez_compressed(
                 session_path
-                + f"/eeg/processed_segments_{str(normalization_method)}_{str(apply_ica)[0]}_uint16.npz",
+                + f"/eeg/processed_segments_{str(normalization_method)}_{str(apply_ica)[0]}_{str(apply_filter)[0]}_uint16.npz",
                 X=X,
                 y=y,
                 group_ids=group_ids,
@@ -118,7 +119,7 @@ def process_chbmit_bids_dataset(
             X = X.astype(np.float32)
             np.savez_compressed(
                 session_path
-                + f"/eeg/processed_segments_{str(normalization_method)}_{str(apply_ica)[0]}_float.npz",
+                + f"/eeg/processed_segments_{str(normalization_method)}_{str(apply_ica)[0]}_{str(apply_filter)[0]}_float.npz",
                 X=X,
                 y=y,
                 group_ids=group_ids,
@@ -127,12 +128,13 @@ def process_chbmit_bids_dataset(
 
 if __name__ == "__main__":
     dataset_dir = "data/BIDS_CHB-MIT"
-    subjects_to_be_preprocessed = [1, 2]
+    subjects_to_be_preprocessed = [2]
     process_chbmit_bids_dataset(
         dataset_dir,
         save_uint16=True,
         normalization_method="zscore",
-        apply_ica=True,
+        apply_ica=False,
+        apply_filter=False,
         subj_nums=subjects_to_be_preprocessed,
         plot_psd=True
     )

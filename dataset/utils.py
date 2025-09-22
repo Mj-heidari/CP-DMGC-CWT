@@ -11,6 +11,7 @@ def preprocess_chbmit(
     l_freq: float = 0.5,
     h_freq: float = 50.0,
     apply_ica: bool = True,
+    apply_filter: bool = True,
     normalize: Optional[str] = "zscore",
 ) -> Tuple[np.ndarray, List[str], int]:
     """
@@ -35,6 +36,8 @@ def preprocess_chbmit(
         Upper frequency bound for bandpass filter, default = 50 Hz.
     apply_ica: bool
         if true the ica will be applied, default = True.
+    apply_filter: bool
+        If true the filtering will be applied, default = True.
     normalize : {"zscore", "robust", None}
         Normalization method to apply after resampling. Default is "zscore".
 
@@ -48,7 +51,8 @@ def preprocess_chbmit(
         raw_proc = raw.copy().pick_types(eeg=True)
         
         # 1. Bandpass filter
-        raw_proc.filter(l_freq, h_freq, fir_design="firwin", phase="zero-double")
+        if apply_filter:
+            raw_proc.filter(l_freq, h_freq, fir_design="firwin", phase="zero-double")
 
         # # 2. Notch filter (60 Hz + harmonics)
         # raw_proc.notch_filter(np.arange(60, h_freq, 60), fir_design="firwin")

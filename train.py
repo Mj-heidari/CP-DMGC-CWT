@@ -240,7 +240,7 @@ def model_builder(model_class, **kwargs):
 
 if __name__ == "__main__":
     dataset_dir = "data/BIDS_CHB-MIT"
-    dataset = CHBMITDataset(dataset_dir, use_uint16=True, offline_transforms=[], suffix="zscore_T", subject_id="02")
+    dataset = CHBMITDataset(dataset_dir, use_uint16=True, offline_transforms=[], suffix="zscore_F_F", subject_id="02")
     model = 'CE-stSENet'
 
     if model == 'EEGNet':
