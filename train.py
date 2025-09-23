@@ -6,9 +6,6 @@ from sklearn.metrics import roc_auc_score, accuracy_score, classification_report
 from tqdm import tqdm
 from dataset.dataset import CHBMITDataset, make_cv_splitter
 
-from models.EEGNet import EEGNet
-from models.CE_stSENet.CE_stSENet import CE_stSENet
-
 import numpy as np
 import warnings
 warnings.filterwarnings("ignore")
@@ -221,61 +218,35 @@ def run_nested_cv(
 
     return all_results
 
-def model_builder(model_class, **kwargs):
-    """
-    Returns a function that builds a fresh model instance.
-    This avoids weight leakage across folds.
-
-    Args:
-        model_class: torch.nn.Module class (e.g., EEGNet)
-        kwargs: parameters to initialize the model
-
-    Returns:
-        A callable that builds a new model each time it's called
-    """
-    def build():
-        return model_class(**kwargs)
-    return build
 
 
 if __name__ == "__main__":
+    from transforms.signal.normalize import InstanceNormTransform
+    from models.provider import get_builder
     dataset_dir = "data/BIDS_CHB-MIT"
-    dataset = CHBMITDataset(dataset_dir, use_uint16=True, offline_transforms=[], suffix="zscore_F_F", subject_id="02")
+    dataset = CHBMITDataset(dataset_dir, use_uint16=True, offline_transforms=[], online_transforms=[InstanceNormTransform()], suffix="None_F_F", subject_id="01")
     model = 'CE-stSENet'
 
-    if model == 'EEGNet':
-        builder = model_builder(
-            EEGNet,
-            chunk_size=640,
-            num_electrodes=18,
-            dropout=0.5,
-            kernel_1=64,
-            kernel_2=16,
-            F1=8,
-            F2=16,
-            D=2,
-            num_classes=2,
-        )
-    elif model == 'CE-stSENet':
-        builder = model_builder(
-            CE_stSENet,
-            inc=18,
-            class_num=2,
-            si=128,
-        )
+    builder = get_builder(model="CE-stSENet")
 
     outer_cv_params = {
         "mode": "leave_one_preictal",
-        "method": "balanced",
+        "method": "balanced_shuffled",
         "random_state": 42,
     }
 
     inner_cv_params = {
-        "mode": "stratified",
-        "n_fold": 5,
-        "shuffle": False,
+        "mode": "leave_one_preictal",
+        "method": "balanced_shuffled",
         "random_state": 42,
     }
+
+    # inner_cv_params = {
+    #     "mode": "stratified",
+    #     "n_fold": 5,
+    #     "shuffle": False,
+    #     "random_state": 42,
+    # }
 
     # Run nested CV for this subject
     results = run_nested_cv(dataset, builder,
