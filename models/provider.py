@@ -1,6 +1,7 @@
 from models.EEGNet import EEGNet
 from models.CE_stSENet.CE_stSENet import CE_stSENet
-
+from models.cspnet import CSPNet
+from models.stnet import STNet
 
 def model_builder(model_class, **kwargs):
     """
@@ -45,6 +46,29 @@ def get_builder(model: str = "CE-stSENet"):
                 si=128,
             )
             return builder
+        case "cspnet":
+            builder = model_builder(
+                CSPNet,
+                chunk_size=128*5,
+                num_electrodes=18,
+                num_classes=2,
+                dropout=0.5,
+                num_filters_t=20,
+                filter_size_t=25,
+                num_filters_s=2,
+                filter_size_s=-1,
+                pool_size_1=100,
+                pool_stride_1=25,
+            )
+            return builder
+        case "stnet":
+            builder = model_builder(
+                STNet,
+                chunk_size=128*5,
+                grid_size=(9, 9),
+                num_classes=2,
+                dropout=0.2
+            )
+            return builder
         case _:
             raise NotImplementedError
-
