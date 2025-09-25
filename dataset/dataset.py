@@ -23,17 +23,15 @@ class CHBMITDataset(Dataset):
         """
         Args:
             dataset_dir (string): path to the processed BIDS_CHB-MIT dataset
-            use_uint16 (boolean): if true uses
+            use_uint16 (boolean): if true uses uint16 format
             subject_id (str): use "*" to include all subjects,
         """
         subject_dirs = sorted(glob.glob(os.path.join(dataset_dir, f"sub-{subject_id}")))
 
         for subj_path in tqdm(subject_dirs):
-            # subj_id = os.path.basename(subj_path)
-
             # Collect all sessions for this subject
-            suffix = f"*{suffix}_uint16.npz" if use_uint16 else f"*{suffix}_float.npz"
-            ses_paths = glob.glob(os.path.join(subj_path, "ses-*", "eeg", suffix))
+            suffix_pattern = f"*{suffix}_uint16.npz" if use_uint16 else f"*{suffix}_float.npz"
+            ses_paths = glob.glob(os.path.join(subj_path, "ses-*", "eeg", suffix_pattern))
             if ses_paths == []:
                 continue
 
@@ -77,10 +75,38 @@ class CHBMITDataset(Dataset):
     def __getitem__(self, idx):
         x = self.X[idx]
         y = self.y[idx]
-        # g = self.group_ids[idx]
         for transform in self.online_transform:
             x = transform(x)
         return torch.tensor(x), torch.tensor(y, dtype=torch.long)
+    
+    def get_class_indices(self):
+        """Return indices for each class - useful for undersampling"""
+        preictal_indices = np.where(self.y == 1)[0]
+        interictal_indices = np.where(self.y == 0)[0]
+        return preictal_indices, interictal_indices
+
+
+class BalancedSubset(Subset):
+    """A Subset that maintains class balance information"""
+    
+    def __init__(self, dataset, indices):
+        super().__init__(dataset, indices)
+        # Store y values for the subset
+        if hasattr(dataset, 'y'):
+            self.y = dataset.y[indices]
+        else:
+            # For nested subsets
+            base_dataset = dataset
+            while hasattr(base_dataset, 'dataset'):
+                base_dataset = base_dataset.dataset
+            original_indices = np.array(dataset.indices)[indices] if hasattr(dataset, 'indices') else indices
+            self.y = base_dataset.y[original_indices]
+    
+    def get_class_indices(self):
+        """Return indices for each class within this subset"""
+        preictal_indices = np.where(self.y == 1)[0]
+        interictal_indices = np.where(self.y == 0)[0]
+        return preictal_indices, interictal_indices
 
 
 def leave_one_preictal_group_out(dataset, method="balanced", random_state=0):
@@ -125,7 +151,7 @@ def leave_one_preictal_group_out(dataset, method="balanced", random_state=0):
 
     Yields
     ------
-    (train_subset, test_subset) : tuple of torch.utils.data.Subset
+    (train_subset, test_subset) : tuple of BalancedSubset
         - train_subset: all preictal samples except the test group, plus
           interictal samples assigned to the remaining groups.
         - test_subset: preictal samples of the held-out group, plus
@@ -156,7 +182,6 @@ def leave_one_preictal_group_out(dataset, method="balanced", random_state=0):
     pre_groups = np.unique(group_id[pre_mask])
 
     # Indices
-    # pre_indices = np.where(pre_mask)[0]
     inter_indices = np.where(inter_mask)[0]
 
     # split interictal indices
@@ -226,7 +251,7 @@ def leave_one_preictal_group_out(dataset, method="balanced", random_state=0):
         train_idx = np.concatenate([pre_train_idx, inter_train_idx]).tolist()
         test_idx = np.concatenate([pre_test_idx, inter_test_idx]).tolist()
 
-        yield Subset(dataset, train_idx), Subset(dataset, test_idx)
+        yield BalancedSubset(dataset, train_idx), BalancedSubset(dataset, test_idx)
 
 
 def cross_validation(dataset, shuffle=False, n_fold=5, random_state=0):
@@ -250,7 +275,7 @@ def cross_validation(dataset, shuffle=False, n_fold=5, random_state=0):
     skf = StratifiedKFold(n_splits=n_fold, shuffle=shuffle, random_state=random_state)
 
     for train_idx, test_idx in skf.split(np.zeros(len(y)), y):
-        yield Subset(dataset, train_idx), Subset(dataset, test_idx)
+        yield BalancedSubset(dataset, train_idx), BalancedSubset(dataset, test_idx)
 
 
 def make_cv_splitter(dataset, mode="stratified", **kwargs):
@@ -273,7 +298,7 @@ def make_cv_splitter(dataset, mode="stratified", **kwargs):
 
     Yields
     ------
-    (train_subset, test_subset) : tuple of Subset
+    (train_subset, test_subset) : tuple of BalancedSubset
     """
     if mode == "stratified":
         return cross_validation(dataset, **kwargs)
