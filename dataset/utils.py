@@ -200,7 +200,7 @@ def infer_preictal_interactal(
         print("No seizures to infer preictal/interictal periods.")
         return raw
 
-    sfreq = raw.info["sfreq"]
+    # sfreq = raw.info["sfreq"]
     total_duration = raw.times[-1]
 
     new_annotations = []
@@ -383,6 +383,7 @@ def extract_segments_with_labels_bids(
     """
     X, y, group_ids = [], [], []
     ann_counter = {lab: 0 for lab in keep_labels}  # counter for each label
+    event_stats = []
 
     for idx, (desc, onset, duration) in enumerate(
         zip(
@@ -411,6 +412,15 @@ def extract_segments_with_labels_bids(
         y.extend([desc] * len(epochs))
         group_ids.extend([block_id] * len(epochs))
 
+        # --- Store event-level stats ---
+        event_stats.append({
+            "event_id": block_id,
+            "label": desc,
+            "onset_sec": float(onset),
+            "duration_sec": float(duration),
+            "n_segments": len(epochs),
+        })
+
     if not X:
         return np.empty((0,)), np.empty((0,)), np.empty((0,))
 
@@ -418,7 +428,7 @@ def extract_segments_with_labels_bids(
     y = np.array(y)
     group_ids = np.array(group_ids)
 
-    return X, y, group_ids
+    return X, y, group_ids, event_stats
 
 
 def scale_to_uint16(X: np.ndarray):
