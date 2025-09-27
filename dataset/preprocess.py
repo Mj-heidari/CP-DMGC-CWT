@@ -67,7 +67,7 @@ def process_chbmit_bids_dataset(
             annotation_file_path = raw_file_path.replace("_eeg.edf", "_events.tsv")
 
             raw = mne.io.read_raw_edf(raw_file_path, preload=True)
-            print("channels names:", raw.ch_names)
+
             annotations = pd.read_csv(annotation_file_path, sep="\t")
 
             raw = add_seizure_annotations_bids(raw, annotations)
@@ -78,7 +78,7 @@ def process_chbmit_bids_dataset(
             raws.append(raw)
 
         raw_all = mne.concatenate_raws(raws)
-        raw_all = infer_preictal_interactal(raw_all)
+        raw_all = infer_preictal_interactal(raw_all, postictal_exclude_minutes=60)
 
         if plot_psd:
             spectrum = raw_all.compute_psd()
@@ -191,15 +191,15 @@ def build_subject_summary_from_event_stats(dataset_dir: str):
 
 if __name__ == "__main__":
     dataset_dir = "data/BIDS_CHB-MIT"
-    subjects_to_be_preprocessed = [13,14,15,16,17,18,19,20,21,22,23,24]
-    # process_chbmit_bids_dataset(
-    #     dataset_dir,
-    #     save_uint16=True,
-    #     normalization_method="zscore",
-    #     apply_ica=False,
-    #     apply_filter=True,
-    #     subj_nums=subjects_to_be_preprocessed,
-    #     plot_psd=True
-    # )
+    subjects_to_be_preprocessed = [1,2,3,4,5,6,7,8,9,10,11]
+    process_chbmit_bids_dataset(
+        dataset_dir,
+        save_uint16=True,
+        normalization_method="zscore",
+        apply_ica=False,
+        apply_filter=True,
+        subj_nums=subjects_to_be_preprocessed,
+        plot_psd=True
+    )
 
     build_subject_summary_from_event_stats("data/BIDS_CHB-MIT")

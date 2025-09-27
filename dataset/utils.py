@@ -175,7 +175,11 @@ def add_seizure_annotations_bids(
 
 
 def infer_preictal_interactal(
-    raw: mne.io.Raw, dynamic_preictal: bool = False, SPE: int = 0
+    raw: mne.io.Raw,
+    preictal_minutes: int = 15,
+    postictal_exclude_minutes: int = 120,
+    dynamic_preictal: bool = False,
+    SPE: int = 0,
 ) -> mne.io.Raw:
     """
     Infer preictal and interictal periods in the Raw object based on seizure annotations.
@@ -184,6 +188,10 @@ def infer_preictal_interactal(
     ----------
     raw : mne.io.Raw
         Raw EEG with seizure annotations.
+    preictal_minutes : int
+        Minutes before seizure onset to mark as preictal. Default = 15.
+    postictal_exclude_minutes : int
+        Minutes after seizure offset to exclude. Default = 120.
     dynamic_preictal : bool, optional
         If True, adjust preictal duration dynamically when overlapping with excluded intervals.
         Default is False.
@@ -217,10 +225,10 @@ def infer_preictal_interactal(
     ]
 
     for onset, offset in zip(seizure_onsets, seizure_offsets):
-        # mark 120 mins after offset as excluded
+        # mark postictal_exclude_minutes mins after offset as excluded
         exclude_start = offset
         ends = [start for start in seizure_onsets if start - offset > 0] + [
-            offset + 120 * 60,
+            offset + postictal_exclude_minutes * 60,
             total_duration,
         ]
         exclude_end = min(ends)
@@ -233,8 +241,8 @@ def infer_preictal_interactal(
         )
 
     for i, onset in enumerate(seizure_onsets):
-        # mark 15 mins before onset as preictal if the period is not excluded
-        preictal_start = max(0, onset - 15 * 60)
+        # mark preictal_minutes mins before onset as preictal if the period is not excluded
+        preictal_start = max(0, onset - preictal_minutes  * 60)
         preictal_end = max(0, onset - SPE)
 
         if not any(
@@ -278,14 +286,14 @@ def infer_preictal_interactal(
                     }
                 )
 
-    # mark 105 before each preictal as excluded
+    # mark (postictal_exclude_minutes - preictal_minutes) before each preictal as excluded
     preictal_onsets = [
         annot["onset"]
         for annot in new_annotations
         if annot["description"] == "preictal"
     ]
     for pre_onset in preictal_onsets:
-        exclude_start = max(0, pre_onset - 105 * 60)
+        exclude_start = max(0, pre_onset - (postictal_exclude_minutes - preictal_minutes) * 60)
         exclude_end = pre_onset
         flag = True
         for new_annot in new_annotations:
