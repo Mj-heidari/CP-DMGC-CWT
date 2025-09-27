@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader, Subset
+from torch.utils.data import DataLoader
 from sklearn.metrics import roc_auc_score, accuracy_score, classification_report
 from tqdm import tqdm
 from dataset.dataset import CHBMITDataset, make_cv_splitter
@@ -13,7 +13,6 @@ import os
 import json
 import logging
 from datetime import datetime
-from collections import defaultdict
 import pickle
 
 warnings.filterwarnings("ignore")
@@ -197,7 +196,7 @@ def setup_run_directory():
             try:
                 num = int(run_dir.split('_')[0].replace('run', ''))
                 run_numbers.append(num)
-            except:
+            except ValueError:
                 continue
         next_run = max(run_numbers) + 1 if run_numbers else 1
     else:
@@ -428,12 +427,12 @@ def run_nested_cv(
     ma_fprs = [r["moving_average"]["fpr_per_hour"] for r in all_results]
 
     logging.info("\n==== Final Results ====")
-    logging.info(f"Raw Results:")
+    logging.info("Raw Results:")
     logging.info(f"  Mean AUC={np.mean(raw_aucs):.4f} ± {np.std(raw_aucs):.4f}")
     logging.info(f"  Mean Sensitivity={np.mean(raw_sens):.4f} ± {np.std(raw_sens):.4f}")
     logging.info(f"  Mean FPR/h={np.mean(raw_fprs):.4f} ± {np.std(raw_fprs):.4f}")
     
-    logging.info(f"Moving Average Results:")
+    logging.info("Moving Average Results:")
     logging.info(f"  Mean AUC={np.mean(ma_aucs):.4f} ± {np.std(ma_aucs):.4f}")
     logging.info(f"  Mean Sensitivity={np.mean(ma_sens):.4f} ± {np.std(ma_sens):.4f}")
     logging.info(f"  Mean FPR/h={np.mean(ma_fprs):.4f} ± {np.std(ma_fprs):.4f}")

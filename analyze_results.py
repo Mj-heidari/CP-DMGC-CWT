@@ -3,11 +3,8 @@ import pickle
 import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
-import seaborn as sns
 from pathlib import Path
 import argparse
-from sklearn.metrics import confusion_matrix
-import os
 
 def load_results(run_dir):
     """Load results from a run directory"""
@@ -297,7 +294,7 @@ def compare_multiple_runs(run_dirs):
     
     # Save comparison
     df_comparison.to_csv('runs_comparison.csv', index=False)
-    print(f"\nComparison saved to runs_comparison.csv")
+    print("\nComparison saved to runs_comparison.csv")
 
 def analyze_single_run(run_dir):
     """Analyze a single run"""
@@ -323,12 +320,12 @@ def analyze_single_run(run_dir):
     raw_fprs = [r['raw']['fpr_per_hour'] for r in results]
     ma_fprs = [r['moving_average']['fpr_per_hour'] for r in results]
     
-    print(f"\nRaw Results:")
+    print("\nRaw Results:")
     print(f"  AUC: {np.mean(raw_aucs):.4f} ± {np.std(raw_aucs):.4f}")
     print(f"  Sensitivity: {np.mean(raw_sens):.4f} ± {np.std(raw_sens):.4f}" if raw_sens else "  Sensitivity: N/A")
     print(f"  FPR/hour: {np.mean(raw_fprs):.4f} ± {np.std(raw_fprs):.4f}")
     
-    print(f"\nMoving Average Results:")
+    print("\nMoving Average Results:")
     print(f"  AUC: {np.mean(ma_aucs):.4f} ± {np.std(ma_aucs):.4f}")
     print(f"  Sensitivity: {np.mean(ma_sens):.4f} ± {np.std(ma_sens):.4f}" if ma_sens else "  Sensitivity: N/A")
     print(f"  FPR/hour: {np.mean(ma_fprs):.4f} ± {np.std(ma_fprs):.4f}")
