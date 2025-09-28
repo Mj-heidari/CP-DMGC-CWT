@@ -442,7 +442,7 @@ def run_nested_cv(
 
 def parse_arguments():
     parser = argparse.ArgumentParser(description='Nested Cross-Validation for Seizure Prediction')
-    
+
     # Dataset parameters
     parser.add_argument('--dataset_dir', type=str, default='data/BIDS_CHB-MIT',
                        help='Path to dataset directory')
@@ -487,7 +487,22 @@ def parse_arguments():
     parser.add_argument('--moving_avg_window', type=int, default=3,
                        help='Moving average window size')
     
-    return parser.parse_args()
+    # Config 
+    parser.add_argument('--config', type=str, default="",
+                        help='Path to json config file')
+    
+    args = parser.parse_args()
+    if args.config:
+        try:
+            with open(args.config, 'r') as file:
+                data: dict = json.load(file)
+            for key, val in data.items():
+                if hasattr(args, key):
+                    setattr(args, key, val)
+        except Exception as e:
+            print("An exception occurred while opening config file. Error:", e)
+        
+    return args
 
 
 if __name__ == "__main__":
