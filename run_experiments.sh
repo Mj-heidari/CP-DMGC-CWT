@@ -11,18 +11,18 @@ LR=1e-3
 # Define preprocessing configurations
 # Format: "normalization_method:apply_ica:apply_filter"
 CONFIGS=(
-    "none:false:false"
-    "none:false:true"
-    "none:true:false"
-    "none:true:true"
+    "None:false:false"
+    "None:false:true"
+    "None:true:false"
+    "None:true:true"
     "zscore:false:false"
     "zscore:false:true"
     "zscore:true:false"
     "zscore:true:true"
-    "robust:false:false"
-    "robust:false:true"
-    "robust:true:false"
-    "robust:true:true"
+    # "robust:false:false"
+    # "robust:false:true"
+    # "robust:true:false"
+    # "robust:true:true"
 )
 
 # Function to get suffix based on configuration
@@ -103,7 +103,7 @@ for config in "${CONFIGS[@]}"; do
     norm_flag=$(should_apply_normalization "$norm")
     
     # Build training command
-    train_cmd="python train.py \
+    train_cmd="./venv/Scripts/python.exe train.py \
         --dataset_dir \"$DATASET_DIR\" \
         --subject_id \"$SUBJECT_ID\" \
         --model \"$MODEL\" \
@@ -111,6 +111,7 @@ for config in "${CONFIGS[@]}"; do
         --batch_size $BATCH_SIZE \
         --lr $LR \
         --suffix \"$suffix\" \
+        --use_uint16 
         $norm_flag"
     
     # Run training
