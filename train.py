@@ -452,7 +452,8 @@ def parse_arguments():
                        help='Dataset suffix')
     parser.add_argument('--use_uint16', action='store_true',
                        help='Use uint16 data format')
-    
+    parser.add_argument('--apply_normalization', action='store_true',
+                       help='Apply InstanceNormTransform')
     # Model parameters
     parser.add_argument('--model', type=str, default='CE-stSENet',
                        help='Model name')
@@ -521,11 +522,16 @@ if __name__ == "__main__":
     from transforms.signal.normalize import InstanceNormTransform
     from models.provider import get_builder
     
+    if args.apply_normalization:
+        online_transforms = [InstanceNormTransform()]
+    else:
+        online_transforms = []
+
     dataset = CHBMITDataset(
         args.dataset_dir,
         use_uint16=args.use_uint16,
         offline_transforms=[],
-        online_transforms=[InstanceNormTransform()],
+        online_transforms=online_transforms,
         suffix=args.suffix,
         subject_id=args.subject_id
     )

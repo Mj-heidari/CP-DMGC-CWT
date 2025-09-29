@@ -1,3 +1,4 @@
+import argparse
 from utils import (
     add_seizure_annotations_bids,
     preprocess_chbmit,
@@ -189,17 +190,95 @@ def build_subject_summary_from_event_stats(dataset_dir: str):
 
     print(f"Saved subject-level summary to {summary_file}")
 
-if __name__ == "__main__":
-    dataset_dir = "data/BIDS_CHB-MIT"
-    subjects_to_be_preprocessed = [1,2,3,4,5,6,7,8,9,10,11]
-    process_chbmit_bids_dataset(
-        dataset_dir,
-        save_uint16=True,
-        normalization_method="zscore",
-        apply_ica=False,
-        apply_filter=True,
-        subj_nums=subjects_to_be_preprocessed,
-        plot_psd=True
-    )
 
-    build_subject_summary_from_event_stats("data/BIDS_CHB-MIT")
+def parse_args():
+    parser = argparse.ArgumentParser(description="Process CHB-MIT EEG dataset in BIDS format")
+    
+    parser.add_argument(
+        "--dataset_dir",
+        type=str,
+        default="data/BIDS_CHB-MIT",
+        help="Path to CHB-MIT dataset directory"
+    )
+    
+    parser.add_argument(
+        "--subjects",
+        type=int,
+        nargs="+",
+        default=None,
+        help="List of subject numbers to preprocess (e.g., 1 2 3). If not specified, all subjects will be processed."
+    )
+    
+    parser.add_argument(
+        "--save_uint16",
+        action="store_true",
+        help="Save EEG data as uint16 instead of float32"
+    )
+    
+    parser.add_argument(
+        "--normalization_method",
+        type=str,
+        default="zscore",
+        choices=["zscore", "robust", "none"],
+        help="Normalization method to apply"
+    )
+    
+    parser.add_argument(
+        "--apply_ica",
+        action="store_true",
+        help="Apply ICA for artifact removal"
+    )
+    
+    parser.add_argument(
+        "--apply_filter",
+        action="store_true",
+        help="Apply filtering to the data"
+    )
+    
+    parser.add_argument(
+        "--plot",
+        action="store_true",
+        help="Plot raw data with annotations"
+    )
+    
+    parser.add_argument(
+        "--plot_psd",
+        action="store_true",
+        help="Plot power spectral density"
+    )
+    
+    parser.add_argument(
+        "--no_statistics",
+        action="store_true",
+        help="Disable printing extraction statistics"
+    )
+    
+    parser.add_argument(
+        "--build_summary",
+        action="store_true",
+        help="Build subject-level summary from event stats"
+    )
+    
+    return parser.parse_args()
+
+
+if __name__ == "__main__":
+    args = parse_args()
+    
+    # Convert "none" to None for normalization
+    norm_method = None if args.normalization_method == "none" else args.normalization_method
+    
+    process_chbmit_bids_dataset(
+        dataset_dir=args.dataset_dir,
+        save_uint16=args.save_uint16,
+        normalization_method=norm_method,
+        apply_ica=args.apply_ica,
+        apply_filter=args.apply_filter,
+        plot=args.plot,
+        plot_psd=args.plot_psd,
+        show_statistics=not args.no_statistics,
+        subj_nums=args.subjects,
+    )
+    
+    if args.build_summary:
+        build_subject_summary_from_event_stats(args.dataset_dir)
