@@ -36,7 +36,7 @@ class CHBMITDataset(Dataset):
                 continue
 
             subj_X, subj_y, subj_group_ids = [], [], []
-            for ses_path in ses_paths:
+            for i, ses_path in enumerate(ses_paths):
                 data = np.load(ses_path)
 
                 X_temp = data["X"]
@@ -46,7 +46,7 @@ class CHBMITDataset(Dataset):
 
                 subj_X.append(X_temp)
                 subj_y.append(data["y"])
-                subj_group_ids.append(data["group_ids"])
+                subj_group_ids.append(np.array([gid + f"_{i}" for gid in data["group_ids"]]))
 
             # Concatenate sessions of this subject
             X = np.concatenate(subj_X, axis=0)
