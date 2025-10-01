@@ -159,6 +159,38 @@ def plot_prediction_distributions(results, run_dir):
     plt.savefig(Path(run_dir) / 'prediction_distributions.png', dpi=300, bbox_inches='tight')
     plt.close()
 
+def plot_preictal_probs_vs_time(results, run_dir):
+    """Plot distribution of predictions"""
+    fig, axes = plt.subplots(2, len(results), figsize=(4*len(results), 8))
+    if len(results) == 1:
+        axes = axes.reshape(-1, 1)
+
+    for fold_idx, fold_result in enumerate(results):
+        y_true = np.array(fold_result['predictions']['y_test'])
+        probs_raw = np.array(fold_result['predictions']['final_probs'])
+        probs_ma = np.array(fold_result['predictions']['final_probs_ma'])
+        
+        # Raw predictions
+        axes[0, fold_idx].plot(probs_raw[y_true == 1])
+        axes[0, fold_idx].set_title(f'Fold {fold_idx+1} - Raw Predictions')
+        axes[0, fold_idx].set_xlabel('Index')
+        axes[0, fold_idx].set_ylabel('Prediction Probability')
+        # axes[0, fold_idx].legend()
+        axes[0, fold_idx].grid(True, alpha=0.3)
+        
+        # Moving average predictions
+        axes[1, fold_idx].plot(probs_ma[y_true == 1])
+        axes[1, fold_idx].set_title(f'Fold {fold_idx+1} - Moving Average Predictions')
+        axes[1, fold_idx].set_xlabel('Index')
+        axes[1, fold_idx].set_ylabel('Prediction Probability')
+        # axes[1, fold_idx].legend()
+        axes[1, fold_idx].grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    plt.savefig(Path(run_dir) / 'preictal_probs_vs_time.png', dpi=300, bbox_inches='tight')
+    plt.close()
+    
+
 def create_summary_table(results, config, run_dir):
     """Create a summary table of results"""
     raw_aucs = [r['raw']['auc'] for r in results]
@@ -233,6 +265,8 @@ def create_summary_table(results, config, run_dir):
     <img src="performance_comparison.png" alt="Performance Comparison" style="max-width:100%;">
     <br><br>
     <img src="prediction_distributions.png" alt="Prediction Distributions" style="max-width:100%;">
+    <br><br>
+    <img src="preictal_probs_vs_time.png" alt="Prediction Distributions" style="max-width:100%;">
     <br><br>
     <img src="training_curves.png" alt="Training Curves" style="max-width:100%;">
     
@@ -340,6 +374,9 @@ def analyze_single_run(run_dir):
     
     plot_prediction_distributions(results, run_dir)
     print(f"Prediction distributions saved to {run_dir}/prediction_distributions.png")
+
+    plot_preictal_probs_vs_time(results, run_dir)
+    print(f"Prediction distributions saved to {run_dir}/preictal_probs_vs_time.png")
     
     create_summary_table(results, config, run_dir)
     print(f"Summary report saved to {run_dir}/report.html")
