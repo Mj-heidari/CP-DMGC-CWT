@@ -2,6 +2,7 @@ from models.EEGNet import EEGNet
 from models.CE_stSENet.CE_stSENet import CE_stSENet
 from models.cspnet import CSPNet
 from models.stnet import STNet
+from models.TSception import TSception
 
 def model_builder(model_class, **kwargs):
     """
@@ -70,5 +71,17 @@ def get_builder(model: str = "CE-stSENet"):
                 dropout=0.2
             )
             return builder
+        case "TSception":
+            builder = model_builder(
+                TSception,
+                num_classes = 2,
+                input_size = (18, 640),
+                sampling_rate = 256,
+                num_T = 9,
+                num_S = 6,
+                hidden = 128,
+                dropout_rate = 0.2
+            )
+            return builder        
         case _:
             raise NotImplementedError

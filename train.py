@@ -95,7 +95,7 @@ class Trainer:
             optimizer.zero_grad()
             if self.model.__class__.__name__ == 'CE_stSENet':
                 X = X.unsqueeze(2)
-            elif self.model.__class__.__name__ == 'EEGNet':
+            elif self.model.__class__.__name__ == 'EEGNet' or self.model.__class__.__name__ == 'TSception':
                 X = X.unsqueeze(1)
             outputs = self.model(X)
             if len(outputs.shape) == 1:
@@ -123,7 +123,7 @@ class Trainer:
         
                 if self.model.__class__.__name__ == 'CE_stSENet':
                     X = X.unsqueeze(2)
-                elif self.model.__class__.__name__ == 'EEGNet':
+                elif self.model.__class__.__name__ == 'EEGNet' or self.model.__class__.__name__ == 'TSception':
                     X = X.unsqueeze(1)
                 outputs = self.model(X)
                 if len(outputs.shape) == 1:
