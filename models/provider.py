@@ -3,6 +3,7 @@ from models.CE_stSENet.CE_stSENet import CE_stSENet
 from models.cspnet import CSPNet
 from models.stnet import STNet
 from models.TSception import TSception
+from models.FBMSNet import FBMSNet
 
 def model_builder(model_class, **kwargs):
     """
@@ -83,5 +84,14 @@ def get_builder(model: str = "CE-stSENet"):
                 dropout_rate = 0.2
             )
             return builder        
+        case "FBMSNet":
+            builder = model_builder(
+                FBMSNet,
+                nChan = 18,
+                nTime = 640,
+                nClass = 2
+            )
+            return builder       
+
         case _:
             raise NotImplementedError
