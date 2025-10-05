@@ -5,6 +5,31 @@ from models.stnet import STNet
 from models.simplevit import SimpleViT
 from models.TSception import TSception
 from models.FBMSNet import FBMSNet
+from models.labram import LaBraM
+import torch.nn as nn
+from functools import partial
+
+
+channels = [
+    "FP1-F3",
+    "F3-C3",
+    "C3-P3",
+    "P3-O1",
+    "FP1-F7",
+    "F7-T7",
+    "T7-P7",
+    "P7-O1",
+    "FZ-CZ",
+    "CZ-PZ",
+    "FP2-F4",
+    "F4-C4",
+    "C4-P4",
+    "P4-O2",
+    "FP2-F8",
+    "F8-T8",
+    "T8-P8",
+    "P8-O2",
+]
 
 def model_builder(model_class, **kwargs):
     """
@@ -109,6 +134,22 @@ def get_builder(model: str = "CE-stSENet"):
                 nTime = 640,
                 nClass = 2
             )
-            return builder       
+            return builder
+        case "LaBraM":
+            builder = model_builder(
+                LaBraM,
+                chunk_size=128 * 5,
+                patch_size=80,
+                embed_dim=80,
+                depth=6,
+                num_heads=6,
+                mlp_ratio=1,
+                qk_norm=partial(nn.LayerNorm, eps=1e-6),
+                norm_layer=partial(nn.LayerNorm, eps=1e-6),
+                init_values=0.1,
+                drop_rate=0.1,
+                electrodes=channels,
+            )
+            return builder
         case _:
             raise NotImplementedError
