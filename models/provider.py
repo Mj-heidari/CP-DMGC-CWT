@@ -2,6 +2,7 @@ from models.EEGNet import EEGNet
 from models.CE_stSENet.CE_stSENet import CE_stSENet
 from models.cspnet import CSPNet
 from models.stnet import STNet
+from models.simplevit import SimpleViT
 
 def model_builder(model_class, **kwargs):
     """
@@ -68,6 +69,23 @@ def get_builder(model: str = "CE-stSENet"):
                 grid_size=(9, 9),
                 num_classes=2,
                 dropout=0.2
+            )
+            return builder
+        case "simple-vit":
+            if SimpleViT is None:
+                raise NotImplementedError("simple-vit module could not be loaded from simple-vit.py")
+            builder = model_builder(
+                SimpleViT,
+                chunk_size=128*5,
+                grid_size=(9, 9),
+                t_patch_size=32,
+                s_patch_size=(3, 3),
+                hid_channels=32,
+                depth=3,
+                heads=4,
+                head_channels=8,
+                mlp_channels=32,
+                num_classes=2,
             )
             return builder
         case _:
