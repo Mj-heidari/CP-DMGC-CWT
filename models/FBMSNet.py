@@ -7,7 +7,6 @@ All network architectures: FBCNet, EEGNet, DeepConvNet
 
 import torch
 import torch.nn as nn
-from torchsummary import summary
 
 import sys
 
