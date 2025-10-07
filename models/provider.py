@@ -6,7 +6,9 @@ from models.simplevit import SimpleViT
 from models.TSception import TSception
 from models.FBMSNet import FBMSNet
 from models.labram import LaBraM
+from models.rgnn import RGNN_Model
 import torch.nn as nn
+import torch
 from functools import partial
 
 
@@ -149,6 +151,27 @@ def get_builder(model: str = "CE-stSENet"):
                 init_values=0.1,
                 drop_rate=0.1,
                 electrodes=channels,
+            )
+            return builder
+        case "RGNN":
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            num_nodes = 18
+            row, col = torch.meshgrid(torch.arange(num_nodes), torch.arange(num_nodes), indexing="ij")
+            edge_index = torch.stack([row.reshape(-1), col.reshape(-1)], dim=0)  
+            edge_weight = torch.ones(num_nodes * num_nodes)
+            edge_weight[row.reshape(-1) == col.reshape(-1)] = 0.0  
+            builder = model_builder(
+                RGNN_Model,
+                device=device,
+                num_nodes=18,
+                edge_weight=edge_weight,
+                edge_index=edge_index,
+                num_features=5,
+                num_hiddens=64,
+                num_classes=2,
+                num_layers=4,
+                dropout=0.1,
+                domain_adaptation=False,
             )
             return builder
         case _:

@@ -3,8 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.autograd import Function
 from torch_geometric.nn import global_add_pool
-from utils import NewSGConv
-# from torch_scatter import scatter_add
+from .utils import NewSGConv
 
 
 def get_dl_mat():
@@ -128,6 +127,7 @@ class RGNN_Model(torch.nn.Module):
             x = global_add_pool(x, data_batch, size=batch_size)
             x = F.dropout(x, p=self.dropout, training=self.training)
             x = self.fc(x)
+            x = F.log_softmax(x, dim=-1)
 
         # x.shape->(batch_size,num_classes)
         # domain_output.shape->(batch_size*num_nodes,2)
