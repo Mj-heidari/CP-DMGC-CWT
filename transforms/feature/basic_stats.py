@@ -1,5 +1,5 @@
 import numpy as np
-from base import FeatureTransform
+from .base import FeatureTransform
 
 
 class BasicStatTransform(FeatureTransform):

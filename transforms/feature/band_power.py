@@ -1,6 +1,6 @@
 import numpy as np
 from scipy.signal import welch
-from base import FeatureTransform
+from .base import FeatureTransform
 
 
 class BandPowerTransform(FeatureTransform):
