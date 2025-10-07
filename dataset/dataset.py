@@ -77,7 +77,7 @@ class CHBMITDataset(Dataset):
         y = self.y[idx]
         for transform in self.online_transform:
             x = transform(x)
-        return torch.tensor(x), torch.tensor(y, dtype=torch.long)
+        return torch.tensor(x, dtype=torch.float), torch.tensor(y, dtype=torch.long)
     
     def get_class_indices(self):
         """Return indices for each class - useful for undersampling"""
