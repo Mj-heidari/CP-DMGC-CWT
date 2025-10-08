@@ -65,7 +65,7 @@ class CHBMITDataset(Dataset):
         # Apply offline transforms once
         for transform in offline_transforms or []:
             transformed_X = []
-            for i in range(self.X.shape[0]):
+            for i in tqdm(range(self.X.shape[0])):
                 transformed_X.append(transform(eeg=self.X[i]))
             self.X = np.stack(transformed_X, axis=0)
 
