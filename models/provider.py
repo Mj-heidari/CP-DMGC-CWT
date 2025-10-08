@@ -7,6 +7,8 @@ from models.TSception import TSception
 from models.FBMSNet import FBMSNet
 from models.labram import LaBraM
 from models.rgnn import RGNN_Model
+from models.dgcnn2 import DGCNN_Model
+from models.dgcnn import DGCNN
 import torch.nn as nn
 import torch
 from functools import partial
@@ -32,6 +34,50 @@ channels = [
     "T8-P8",
     "P8-O2",
 ]
+
+
+def initialize_edge_weights(num_nodes: int, seed: int = 42, diag_value: float = 1.0):
+    """
+    Initializes edge_index and edge_weight matrices for a fully connected graph.
+
+    Parameters
+    ----------
+    num_nodes : int
+        Number of nodes (EEG channels, etc.)
+    seed : int, optional
+        Random seed for reproducibility (default: 42)
+    diag_value : float, optional
+        Value to fill on the diagonal (e.g., 1.0 for self-loops)
+
+    Returns
+    -------
+    edge_index : torch.LongTensor
+        Edge indices of shape [2, num_nodes * num_nodes]
+    edge_weight : torch.FloatTensor
+        Flattened edge weights of shape [num_nodes * num_nodes]
+    """
+
+    # Make initialization reproducible
+    torch.manual_seed(seed)
+
+    # Build fully connected edge index (including self-loops)
+    row, col = torch.meshgrid(
+        torch.arange(num_nodes), torch.arange(num_nodes), indexing="ij"
+    )
+    edge_index = torch.stack([row.reshape(-1), col.reshape(-1)], dim=0)
+
+    # Initialize weights (num_nodes x num_nodes)
+    edge_weight = torch.empty(num_nodes, num_nodes)
+    torch.nn.init.xavier_normal_(edge_weight)  # Xavier initialization
+
+    # Set diagonal (self-loop weights)
+    edge_weight.fill_diagonal_(diag_value)
+
+    # Flatten to match model input
+    edge_weight = edge_weight.reshape(-1)
+
+    return edge_index, edge_weight
+
 
 def model_builder(model_class, **kwargs):
     """
@@ -79,7 +125,7 @@ def get_builder(model: str = "CE-stSENet"):
         case "cspnet":
             builder = model_builder(
                 CSPNet,
-                chunk_size=128*5,
+                chunk_size=128 * 5,
                 num_electrodes=18,
                 num_classes=2,
                 dropout=0.5,
@@ -93,19 +139,17 @@ def get_builder(model: str = "CE-stSENet"):
             return builder
         case "stnet":
             builder = model_builder(
-                STNet,
-                chunk_size=128*5,
-                grid_size=(9, 9),
-                num_classes=2,
-                dropout=0.2
+                STNet, chunk_size=128 * 5, grid_size=(9, 9), num_classes=2, dropout=0.2
             )
             return builder
         case "simple-vit":
             if SimpleViT is None:
-                raise NotImplementedError("simple-vit module could not be loaded from simple-vit.py")
+                raise NotImplementedError(
+                    "simple-vit module could not be loaded from simple-vit.py"
+                )
             builder = model_builder(
                 SimpleViT,
-                chunk_size=128*5,
+                chunk_size=128 * 5,
                 grid_size=(9, 9),
                 t_patch_size=32,
                 s_patch_size=(3, 3),
@@ -120,22 +164,17 @@ def get_builder(model: str = "CE-stSENet"):
         case "TSception":
             builder = model_builder(
                 TSception,
-                num_classes = 2,
-                input_size = (18, 640),
-                sampling_rate = 256,
-                num_T = 9,
-                num_S = 6,
-                hidden = 128,
-                dropout_rate = 0.2
+                num_classes=2,
+                input_size=(18, 640),
+                sampling_rate=256,
+                num_T=9,
+                num_S=6,
+                hidden=128,
+                dropout_rate=0.2,
             )
-            return builder        
+            return builder
         case "FBMSNet":
-            builder = model_builder(
-                FBMSNet,
-                nChan = 18,
-                nTime = 640,
-                nClass = 2
-            )
+            builder = model_builder(FBMSNet, nChan=18, nTime=640, nClass=2)
             return builder
         case "LaBraM":
             builder = model_builder(
@@ -156,14 +195,11 @@ def get_builder(model: str = "CE-stSENet"):
         case "RGNN":
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
             num_nodes = 18
-            row, col = torch.meshgrid(torch.arange(num_nodes), torch.arange(num_nodes), indexing="ij")
-            edge_index = torch.stack([row.reshape(-1), col.reshape(-1)], dim=0)  
-            edge_weight = torch.ones(num_nodes * num_nodes)
-            edge_weight[row.reshape(-1) == col.reshape(-1)] = 0.0  
+            edge_index, edge_weight = initialize_edge_weights(num_nodes=num_nodes)
             builder = model_builder(
                 RGNN_Model,
                 device=device,
-                num_nodes=18,
+                num_nodes=num_nodes,
                 edge_weight=edge_weight,
                 edge_index=edge_index,
                 num_features=5,
@@ -172,6 +208,33 @@ def get_builder(model: str = "CE-stSENet"):
                 num_layers=4,
                 dropout=0.1,
                 domain_adaptation=False,
+            )
+            return builder
+        case "DGCNN":
+            builder = model_builder(
+                DGCNN,
+                in_channels=5,
+                num_electrodes=18,
+                num_layers=2,
+                hid_channels=32,
+                num_classes=2,
+            )
+            return builder
+        case "DGCNN2":
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            num_nodes = 18
+            edge_index, edge_weight = initialize_edge_weights(num_nodes=num_nodes)
+            builder = model_builder(
+                DGCNN_Model,
+                device=device,
+                num_nodes=num_nodes,
+                edge_weight=edge_weight,
+                edge_index=edge_index,
+                num_features=5,
+                num_hiddens=32,
+                num_classes=2,
+                num_layers=2,
+                dropout=0.0,
             )
             return builder
         case _:
