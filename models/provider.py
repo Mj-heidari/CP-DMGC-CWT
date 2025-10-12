@@ -9,6 +9,7 @@ from models.labram import LaBraM
 from models.rgnn import RGNN_Model
 from models.dgcnn2 import DGCNN_Model
 from models.dgcnn import DGCNN
+from models.conformer import Conformer
 import torch.nn as nn
 import torch
 from functools import partial
@@ -235,6 +236,15 @@ def get_builder(model: str = "CE-stSENet"):
                 num_classes=2,
                 num_layers=2,
                 dropout=0.0,
+            )
+            return builder
+        case "Conformer":
+            builder = model_builder(
+                Conformer,
+                num_classes=2, 
+                input_dim=18, 
+                encoder_dim=32, 
+                num_encoder_layers=3
             )
             return builder
         case _:
