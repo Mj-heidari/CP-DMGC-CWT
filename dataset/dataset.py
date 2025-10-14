@@ -30,8 +30,12 @@ class CHBMITDataset(Dataset):
 
         for subj_path in tqdm(subject_dirs):
             # Collect all sessions for this subject
-            suffix_pattern = f"*{suffix}_uint16.npz" if use_uint16 else f"*{suffix}_float.npz"
-            ses_paths = glob.glob(os.path.join(subj_path, "ses-*", "eeg", suffix_pattern))
+            suffix_pattern = (
+                f"*{suffix}_uint16.npz" if use_uint16 else f"*{suffix}_float.npz"
+            )
+            ses_paths = glob.glob(
+                os.path.join(subj_path, "ses-*", "eeg", suffix_pattern)
+            )
             if ses_paths == []:
                 continue
 
@@ -46,7 +50,9 @@ class CHBMITDataset(Dataset):
 
                 subj_X.append(X_temp)
                 subj_y.append(data["y"])
-                subj_group_ids.append(np.array([gid + f"_{i}" for gid in data["group_ids"]]))
+                subj_group_ids.append(
+                    np.array([gid + f"_{i}" for gid in data["group_ids"]])
+                )
 
             # Concatenate sessions of this subject
             X = np.concatenate(subj_X, axis=0)
@@ -78,7 +84,7 @@ class CHBMITDataset(Dataset):
         for transform in self.online_transform:
             x = transform(x)
         return torch.tensor(x, dtype=torch.float), torch.tensor(y, dtype=torch.long)
-    
+
     def get_class_indices(self):
         """Return indices for each class - useful for undersampling"""
         preictal_indices = np.where(self.y == 1)[0]
@@ -86,22 +92,21 @@ class CHBMITDataset(Dataset):
         return preictal_indices, interictal_indices
 
 
-class BalancedSubset(Subset):
-    """A Subset that maintains class balance information"""
-    
+class SubsetWithInfo(Subset):
+    """A Subset that maintains instances' classes and groups information"""
+
     def __init__(self, dataset, indices):
         super().__init__(dataset, indices)
-        # Store y values for the subset
-        if hasattr(dataset, 'y'):
-            self.y = dataset.y[indices]
+        if isinstance(dataset, SubsetWithInfo):
+            self.base_dataset: CHBMITDataset = dataset.base_dataset
+            self.base_indices = np.array(dataset.base_indices)[indices]
         else:
-            # For nested subsets
-            base_dataset = dataset
-            while hasattr(base_dataset, 'dataset'):
-                base_dataset = base_dataset.dataset
-            original_indices = np.array(dataset.indices)[indices] if hasattr(dataset, 'indices') else indices
-            self.y = base_dataset.y[original_indices]
-    
+            self.base_dataset: CHBMITDataset = dataset
+            self.base_indices = indices
+
+        self.y = self.base_dataset.y[self.base_indices]
+        self.group_ids = self.base_dataset.group_ids[self.base_indices]
+
     def get_class_indices(self):
         """Return indices for each class within this subset"""
         preictal_indices = np.where(self.y == 1)[0]
@@ -129,7 +134,7 @@ def leave_one_preictal_group_out(dataset, method="balanced", random_state=0):
                 Identifiers for preictal groups (all samples from the same
                 seizure share the same ID).
 
-    method : {"balanced", "balanced_shuffled", "nearest"}, default="balanced"
+    method : {"balanced", "balanced_shuffled"}, default="balanced"
         Strategy to assign interictal samples to folds:
           - "balanced":
               Interictal samples are split into N equal parts,
@@ -139,11 +144,6 @@ def leave_one_preictal_group_out(dataset, method="balanced", random_state=0):
               Same as "balanced", but interictal samples are shuffled
               randomly before splitting. Shuffling is controlled by
               `random_state` for reproducibility.
-          - "nearest":
-              Each interictal sample is assigned to the closest preictal
-              group based on temporal order. Samples before the first seizure
-              go to the first group, after the last seizure to the last group,
-              and in between to the nearer of the two surrounding seizures.
 
     random_state : int, default=0
         Random seed for reproducible shuffling (used only if
@@ -151,7 +151,7 @@ def leave_one_preictal_group_out(dataset, method="balanced", random_state=0):
 
     Yields
     ------
-    (train_subset, test_subset) : tuple of BalancedSubset
+    (train_subset, test_subset) : tuple of SubsetWithInfo
         - train_subset: all preictal samples except the test group, plus
           interictal samples assigned to the remaining groups.
         - test_subset: preictal samples of the held-out group, plus
@@ -163,16 +163,7 @@ def leave_one_preictal_group_out(dataset, method="balanced", random_state=0):
     ...     # train model on train_set
     ...     # evaluate on test_set
     """
-
-    if isinstance(dataset, torch.utils.data.Subset):
-        base_ds = dataset.dataset
-        idx = dataset.indices
-        idx.sort()
-        y = base_ds.y[idx]
-        dataset.y = y
-        group_id = base_ds.group_ids[idx]
-    else:
-        y, group_id = dataset.y, dataset.group_ids
+    y, group_id = dataset.y, dataset.group_ids
 
     # Masks
     pre_mask = y == 1
@@ -195,39 +186,6 @@ def leave_one_preictal_group_out(dataset, method="balanced", random_state=0):
         chunks = np.array_split(inter_indices, n_splits)
         for i, group in enumerate(pre_groups):
             inter_chunks[group] = chunks[i]
-    else:
-        # Compute start/end of each preictal group
-        pre_bounds = []
-        for g in pre_groups:
-            indices = np.where(group_id == g)[0]
-            pre_bounds.append((indices[0], indices[-1]))
-
-        # Assign each interictal sample to nearest preictal group
-        inter_assignment = []
-
-        for idx in inter_indices:
-            # idx is the position in the original dataset
-            if idx <= pre_bounds[0][0]:
-                inter_assignment.append(pre_groups[0])
-            elif idx >= pre_bounds[-1][1]:
-                inter_assignment.append(pre_groups[-1])
-            else:
-                for j in range(len(pre_bounds) - 1):
-                    mid = (pre_bounds[j][1] + pre_bounds[j + 1][0]) // 2
-                    if idx <= mid and idx >= pre_bounds[j][1]:
-                        inter_assignment.append(pre_groups[j])
-                        break
-                    elif idx > mid and idx <= pre_bounds[j + 1][1]:
-                        inter_assignment.append(pre_groups[j + 1])
-                        break
-
-        # Group interictal indices by assigned preictal group
-        for idx, assigned_group in zip(inter_indices, inter_assignment):
-            inter_chunks[assigned_group].append(idx)
-
-        for pre_group in pre_groups:
-            if pre_group not in inter_chunks.keys():
-                pre_mask[group_id == pre_group] = 0
 
     # Build folds
     for test_group in inter_chunks.keys():
@@ -251,7 +209,7 @@ def leave_one_preictal_group_out(dataset, method="balanced", random_state=0):
         train_idx = np.concatenate([pre_train_idx, inter_train_idx]).tolist()
         test_idx = np.concatenate([pre_test_idx, inter_test_idx]).tolist()
 
-        yield BalancedSubset(dataset, train_idx), BalancedSubset(dataset, test_idx)
+        yield SubsetWithInfo(dataset, train_idx), SubsetWithInfo(dataset, test_idx)
 
 
 def cross_validation(dataset, shuffle=False, n_fold=5, random_state=0):
@@ -275,7 +233,7 @@ def cross_validation(dataset, shuffle=False, n_fold=5, random_state=0):
     skf = StratifiedKFold(n_splits=n_fold, shuffle=shuffle, random_state=random_state)
 
     for train_idx, test_idx in skf.split(np.zeros(len(y)), y):
-        yield BalancedSubset(dataset, train_idx), BalancedSubset(dataset, test_idx)
+        yield SubsetWithInfo(dataset, train_idx), SubsetWithInfo(dataset, test_idx)
 
 
 def make_cv_splitter(dataset, mode="stratified", **kwargs):
@@ -298,7 +256,7 @@ def make_cv_splitter(dataset, mode="stratified", **kwargs):
 
     Yields
     ------
-    (train_subset, test_subset) : tuple of BalancedSubset
+    (train_subset, test_subset) : tuple of SubsetWithInfo
     """
     if mode == "stratified":
         return cross_validation(dataset, **kwargs)
@@ -306,3 +264,41 @@ def make_cv_splitter(dataset, mode="stratified", **kwargs):
         return leave_one_preictal_group_out(dataset, **kwargs)
     else:
         raise ValueError(f"Unknown mode: {mode}")
+
+
+if __name__ == "__main__":
+    dataset = CHBMITDataset(
+        "data/BIDS_CHB-MIT",
+        use_uint16=True,
+        offline_transforms=[],
+        online_transforms=[],
+        suffix="zscore_F_T",
+        subject_id="01",
+    )
+
+    train_val_dataset, test_dataset = next(
+        make_cv_splitter(dataset, "leave_one_preictal")
+    )
+    train_dataset, val_dataset = next(
+        make_cv_splitter(train_val_dataset, "leave_one_preictal")
+    )
+    print("------------")
+    print(dataset.__len__())
+    print(
+        len(train_dataset),
+        len(val_dataset),
+        len(test_dataset),
+        len(train_dataset) + len(val_dataset) + len(test_dataset),
+    )
+    print("------------")
+    print(np.unique(dataset.group_ids[train_dataset.base_indices]))
+    print(np.unique(dataset.group_ids[val_dataset.base_indices]))
+    print(np.unique(dataset.group_ids[test_dataset.base_indices]))
+    print("------------")
+    print(np.unique(train_dataset.group_ids))
+    print(np.unique(val_dataset.group_ids))
+    print(np.unique(test_dataset.group_ids))
+    print("------------")
+    print(np.unique(train_dataset.group_ids[train_dataset.get_class_indices()[0]]))
+    print(np.unique(val_dataset.group_ids[val_dataset.get_class_indices()[0]]))
+    print(np.unique(test_dataset.group_ids[test_dataset.get_class_indices()[0]]))
