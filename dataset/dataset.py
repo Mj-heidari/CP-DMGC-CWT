@@ -114,6 +114,63 @@ class SubsetWithInfo(Subset):
         return preictal_indices, interictal_indices
 
 
+class UnderSampledDataLoader:
+    """Custom DataLoader that undersamples interictal data each epoch"""
+    
+    def __init__(self, dataset, batch_size=32, shuffle=True):
+        self.dataset = dataset
+        self.batch_size = batch_size
+        self.shuffle = shuffle
+        
+        # Get indices for each class
+        self.preictal_indices = []
+        self.interictal_indices = []
+        
+        for i in range(len(dataset)):
+            if dataset.y[i] == 1:  # preictal
+                self.preictal_indices.append(i)
+            else:  # interictal
+                self.interictal_indices.append(i)
+        
+        self.preictal_indices = np.array(self.preictal_indices)
+        self.interictal_indices = np.array(self.interictal_indices)
+        
+    def __iter__(self):
+        # Randomly undersample interictal to match preictal count
+        n_preictal = len(self.preictal_indices)
+        n_interictal = len(self.interictal_indices)
+        
+        if n_interictal > n_preictal:
+            # Randomly sample interictal indices
+            selected_interictal = np.random.choice(
+                self.interictal_indices, size=n_preictal, replace=False
+            )
+            all_indices = np.concatenate([self.preictal_indices, selected_interictal])
+        else:
+            all_indices = np.concatenate([self.preictal_indices, self.interictal_indices])
+        
+        if self.shuffle:
+            np.random.shuffle(all_indices)
+        
+        # Create batches
+        for i in range(0, len(all_indices), self.batch_size):
+            batch_indices = all_indices[i:i + self.batch_size]
+            batch_data = []
+            batch_labels = []
+            
+            for idx in batch_indices:
+                data, label = self.dataset[idx]
+                batch_data.append(data)
+                batch_labels.append(label)
+            
+            yield torch.stack(batch_data), torch.stack(batch_labels)
+    
+    def __len__(self):
+        n_preictal = len(self.preictal_indices)
+        n_interictal = len(self.interictal_indices)
+        total_samples = n_preictal + min(n_preictal, n_interictal)
+        return (total_samples + self.batch_size - 1) // self.batch_size
+
 def leave_one_preictal_group_out(dataset, method="balanced", random_state=0):
     """
     Cross-validation splitter for seizure prediction datasets.
