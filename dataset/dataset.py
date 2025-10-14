@@ -4,6 +4,7 @@ import numpy as np
 from typing import Callable, List
 import glob
 import os
+import math
 from .utils import invert_uint16_scaling
 from tqdm import tqdm
 from collections import defaultdict
@@ -170,6 +171,95 @@ class UnderSampledDataLoader:
         n_interictal = len(self.interictal_indices)
         total_samples = n_preictal + min(n_preictal, n_interictal)
         return (total_samples + self.batch_size - 1) // self.batch_size
+
+
+class MilDataloader:
+    """DataLoader that builds random MIL bags each epoch."""
+
+    def __init__(self, dataset: SubsetWithInfo, batch_size=32, shuffle=True, bag_size=8, balance=True, seed=42):
+        if seed is not None:
+            np.random.seed(seed)
+
+        self.dataset = dataset
+        self.batch_size = batch_size
+        self.shuffle = shuffle
+        self.bag_size = bag_size
+        self.balance = balance
+
+        # Pre-group indices by class and group_id
+        self.preictal_indices_grouped = defaultdict(list)
+        self.interictal_indices = []
+
+        for i in range(len(dataset)):
+            if dataset.y[i] == 1:
+                self.preictal_indices_grouped[dataset.group_ids[i]].append(i)
+            else:
+                self.interictal_indices.append(i)
+
+        self.build_bags()
+    
+    def build_bags(self):
+        preictal_bags = []
+        interictal_bags = []
+
+        # --- Build preictal bags ---
+        for group_inds in self.preictal_indices_grouped.values():
+            inds = np.array(group_inds)
+            np.random.shuffle(inds)
+            n_bags = len(inds) // self.bag_size
+            if n_bags > 0:
+                bags = np.array_split(inds[: n_bags * self.bag_size], n_bags)
+                preictal_bags.extend([(b, 1) for b in bags])
+
+        # --- Build interictal bags ---
+        inds = np.array(self.interictal_indices)
+        np.random.shuffle(inds)
+        n_bags = len(inds) // self.bag_size
+        if n_bags > 0:
+            bags = np.array_split(inds[: n_bags * self.bag_size], n_bags)
+            interictal_bags.extend([(b, 0) for b in bags])
+
+        # --- Balance the number of bags ---
+        if self.balance:
+            n_pre = len(preictal_bags)
+            n_inter = len(interictal_bags)
+            if n_inter > n_pre:
+                import random
+                interictal_bags = random.sample(interictal_bags, n_pre)
+
+        # --- Combine & shuffle all bags ---
+        self.all_bags = preictal_bags + interictal_bags
+        if self.shuffle:
+            np.random.shuffle(self.all_bags)
+
+    def __iter__(self):
+        self.build_bags()
+        # --- Yield mini-batches of bags ---
+        for i in range(0, len(self.all_bags), self.batch_size):
+            batch = self.all_bags[i : i + self.batch_size]
+            batch_data, batch_labels = [], []
+
+            for bag_indices, bag_label in batch:
+                bag_data, instance_labels = [], []
+                for idx in bag_indices:
+                    x, y = self.dataset[idx]
+                    bag_data.append(x)
+                    instance_labels.append(y)
+
+                bag_data = torch.stack(bag_data)
+                instance_labels = torch.tensor(instance_labels)
+
+                if not torch.all(instance_labels == bag_label):
+                    raise ValueError("Mixed labels in bag")
+
+                batch_data.append(bag_data)
+                batch_labels.append(bag_label)
+
+            yield torch.stack(batch_data), torch.tensor(batch_labels)
+
+    def __len__(self):
+        return math.ceil(len(self.all_bags) / self.batch_size)
+
 
 def leave_one_preictal_group_out(dataset, method="balanced", random_state=0):
     """
@@ -359,3 +449,10 @@ if __name__ == "__main__":
     print(np.unique(train_dataset.group_ids[train_dataset.get_class_indices()[0]]))
     print(np.unique(val_dataset.group_ids[val_dataset.get_class_indices()[0]]))
     print(np.unique(test_dataset.group_ids[test_dataset.get_class_indices()[0]]))
+    print("------------")
+    print(train_dataset.group_ids[train_dataset.get_class_indices()[0]].__len__())
+    dataloader = MilDataloader(train_dataset, batch_size=16, bag_size=16)
+    print(dataloader.__len__())
+    for batch_data, batch_labels in iter(dataloader):
+        print(batch_data.shape)
+        print(batch_labels)
