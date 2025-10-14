@@ -175,7 +175,7 @@ def plot_preictal_probs_vs_time(results, run_dir):
         axes[0, fold_idx].set_title(f'Fold {fold_idx+1} - Raw Predictions')
         axes[0, fold_idx].set_xlabel('Index')
         axes[0, fold_idx].set_ylabel('Prediction Probability')
-        # axes[0, fold_idx].legend()
+        axes[0, fold_idx].set_ylim([0,1])
         axes[0, fold_idx].grid(True, alpha=0.3)
         
         # Moving average predictions
@@ -183,7 +183,7 @@ def plot_preictal_probs_vs_time(results, run_dir):
         axes[1, fold_idx].set_title(f'Fold {fold_idx+1} - Moving Average Predictions')
         axes[1, fold_idx].set_xlabel('Index')
         axes[1, fold_idx].set_ylabel('Prediction Probability')
-        # axes[1, fold_idx].legend()
+        axes[1, fold_idx].set_ylim([0,1])
         axes[1, fold_idx].grid(True, alpha=0.3)
     
     plt.tight_layout()
