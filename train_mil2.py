@@ -95,22 +95,45 @@ class Trainer:
 
             if self.use_mil:
                 outputs = outputs.view(B, N, -1)
-
                 bag_outputs = []
+                ys = []
                 for i in range(X.shape[0]):  # loop over bags
                     if y[i] == 1:
                         bag_out, _ = torch.max(outputs[i], dim=0)
+                        bag_outputs.append(bag_out)
+                        ys.append(1)
                     else:
-                        bag_out = torch.mean(outputs[i], dim=0)
-                    bag_outputs.append(bag_out)
-
+                        # bag_out = torch.mean(outputs[i], dim=0)
+                        # bag_outputs.append(bag_out)
+                        # ys.append(0)
+                        for j in range(N):
+                            bag_outputs.append(outputs[i, j])
+                            ys.append(0)
+                    
                 bag_outputs = torch.stack(bag_outputs)
+                ys = torch.tensor(ys, device=y.device)
             else:
                 bag_outputs = outputs
+                ys = y
 
             if len(bag_outputs.shape) == 1:
                 bag_outputs = bag_outputs.unsqueeze(0)
-            loss = self.criterion(bag_outputs, y)
+
+            pos_mask = ys == 1
+            neg_mask = ys == 0
+
+            loss = 0.0
+
+            if pos_mask.any():
+                loss_pos = self.criterion(bag_outputs[pos_mask], torch.ones_like(ys[pos_mask]))
+                if self.use_mil:
+                    loss = loss + loss_pos * N# scale positives if desired
+                else:
+                    loss = loss + loss_pos
+
+            if neg_mask.any():
+                loss_neg = self.criterion(bag_outputs[neg_mask], torch.zeros_like(ys[neg_mask]))
+                loss = loss + loss_neg
 
             loss.backward()
             optimizer.step()
@@ -118,7 +141,7 @@ class Trainer:
             total_loss += loss.item() * X.shape[0]
             preds = torch.argmax(bag_outputs, dim=1).cpu().numpy()
             all_preds.extend(preds)
-            all_labels.extend(y.cpu().numpy())
+            all_labels.extend(ys.cpu().numpy())
 
         avg_loss = total_loss / (len(train_loader) * train_loader.batch_size)
         acc = accuracy_score(all_labels, all_preds)
@@ -150,22 +173,45 @@ class Trainer:
 
                 if self.use_mil:
                     outputs = outputs.view(B, N, -1)
-
                     bag_outputs = []
+                    ys = []
                     for i in range(X.shape[0]):  # loop over bags
                         if y[i] == 1:
                             bag_out, _ = torch.max(outputs[i], dim=0)
+                            bag_outputs.append(bag_out)
+                            ys.append(1)
                         else:
-                            bag_out = torch.mean(outputs[i], dim=0)
-                        bag_outputs.append(bag_out)
-
+                            # bag_out = torch.mean(outputs[i], dim=0)
+                            # bag_outputs.append(bag_out)
+                            # ys.append(0)
+                            for j in range(N):
+                                bag_outputs.append(outputs[i, j])
+                                ys.append(0)
+                        
                     bag_outputs = torch.stack(bag_outputs)
+                    ys = torch.tensor(ys, device=y.device)
                 else:
                     bag_outputs = outputs
+                    ys = y
 
                 if len(bag_outputs.shape) == 1:
                     bag_outputs = bag_outputs.unsqueeze(0)
-                loss = self.criterion(bag_outputs, y)
+                    
+                pos_mask = ys == 1
+                neg_mask = ys == 0
+
+                loss = 0.0
+
+                if pos_mask.any():
+                    loss_pos = self.criterion(bag_outputs[pos_mask], torch.ones_like(ys[pos_mask]))
+                    if self.use_mil:
+                        loss = loss + loss_pos * N# scale positives if desired
+                    else:
+                        loss = loss + loss_pos
+
+                if neg_mask.any():
+                    loss_neg = self.criterion(bag_outputs[neg_mask], torch.zeros_like(ys[neg_mask]))
+                    loss = loss + loss_neg
 
                 total_loss += loss.item() * X.shape[0]
                 probs = torch.softmax(bag_outputs, dim=1)[:, 1].cpu().numpy()
@@ -173,7 +219,7 @@ class Trainer:
 
                 all_probs.extend(probs)
                 all_preds.extend(preds)
-                all_labels.extend(y.cpu().numpy())
+                all_labels.extend(ys.cpu().numpy())
 
         avg_loss = total_loss / len(loader.dataset)
         acc = accuracy_score(all_labels, all_preds)
@@ -329,7 +375,7 @@ def run_nested_cv(
 
             # Create undersampled train loader
             train_loader = MilDataloader(train_dataset, batch_size=batch_size, shuffle=True, bag_size=2 )
-            val_loader = MilDataloader(val_dataset, batch_size=batch_size, shuffle=False, bag_size=2, balance=False)
+            val_loader = MilDataloader(val_dataset, batch_size=batch_size, shuffle=False, bag_size=4, balance=False)
             test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
             # Model & trainer
@@ -348,7 +394,8 @@ def run_nested_cv(
                 tn, fp, fn, tp = confusion_matrix(all_labels, all_preds).ravel().tolist()
                 TPR_val = tp / (tp + fn)
                 FPR_val = fp / (fp + tn)
-                metric = TPR_val/(FPR_val+10e-5)
+                # metric = TPR_val/(FPR_val+10e-5)
+                metric = -val_loss
                 # Save best model checkpoint
                 trainer.save_checkpoint(epoch, metric, fold+1, inner_fold+1)
                 
@@ -365,11 +412,11 @@ def run_nested_cv(
                 inner_fold_log.append(epoch_info)
                 
                 logging.info(f"Epoch {epoch:02d} | "
-                          f"Train {tr_loss:.4f}/{TPR:.4f}/{FPR:.4f}/{TPR/(FPR+10e-5):.4f} | "
-                          f"Val {val_loss:.4f}/{val_auc:.4f}/{TPR_val:.4f}/{FPR_val:.4f}/{TPR_val/(FPR_val+10e-5):.4f}")
+                          f"Train {tr_loss:.4f}/{TPR:.4f}/{FPR:.4f}/{TPR/(FPR+10e-3):.4f} | "
+                          f"Val {val_loss:.4f}/{val_auc:.4f}/{TPR_val:.4f}/{FPR_val:.4f}/{TPR_val/(FPR_val+10e-3):.4f}")
                 
-                train_loader.bag_size = min(train_loader.bag_size+1 ,16)
-                val_loader.bag_size = min(val_loader.bag_size+1, 16)
+                train_loader.bag_size = min(train_loader.bag_size+1 ,4)
+                # val_loader.bag_size = min(val_loader.bag_size+1, 16)
 
             # Load best model for test prediction
             trainer.load_best_model()
