@@ -283,8 +283,17 @@ def run_nested_cv(
                 'model_path': trainer.best_model_path
             })
 
-        # Ensemble (mean across inner models)
-        final_probs = np.mean(test_probs_ensemble, axis=0)
+        val_aucs = np.array([r['best_val_auc'] for r in fold_results['inner_fold_results']])
+        test_probs_stack = np.stack(test_probs_ensemble)
+
+        # Normalize or softmax weights
+        weights = val_aucs / val_aucs.sum()
+        # weights = np.exp(val_aucs) / np.exp(val_aucs).sum()  # optional softmax weighting
+
+        # Weighted ensemble
+        final_probs = np.tensordot(weights, test_probs_stack, axes=1)
+
+        logging.info(f"Weighted ensemble completed. Weights: {weights}")
         
         # Apply moving average
         final_probs_ma = moving_average_predictions(final_probs, moving_avg_window)
