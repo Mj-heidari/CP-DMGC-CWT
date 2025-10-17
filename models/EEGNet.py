@@ -119,6 +119,7 @@ class EEGNet(nn.Module):
         return self.F2 * mock_eeg.shape[3]
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = x.unsqueeze(1)
         r'''
         Args:
             x (torch.Tensor): EEG signal representation, the ideal input shape is :obj:`[n, 60, 151]`. Here, :obj:`n` corresponds to the batch size, :obj:`60` corresponds to :obj:`num_electrodes`, and :obj:`151` corresponds to :obj:`chunk_size`.

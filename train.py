@@ -35,13 +35,8 @@ class Trainer:
             X, y = X.to(self.device), y.to(self.device)
 
             optimizer.zero_grad()
-            if self.model.__class__.__name__ == 'CE_stSENet':
-                X = X.unsqueeze(2)
-            elif self.model.__class__.__name__ == 'EEGNet' or self.model.__class__.__name__ == 'TSception':
-                X = X.unsqueeze(1)
             outputs = self.model(X)
-            if len(outputs.shape) == 1:
-                outputs = outputs.unsqueeze(0)
+
             loss = self.criterion(outputs, y)
             loss.backward()
             optimizer.step()
@@ -63,13 +58,8 @@ class Trainer:
             for X, y in tqdm(loader, desc="Evaluating", leave=False):
                 X, y = X.to(self.device), y.to(self.device)
         
-                if self.model.__class__.__name__ == 'CE_stSENet':
-                    X = X.unsqueeze(2)
-                elif self.model.__class__.__name__ == 'EEGNet' or self.model.__class__.__name__ == 'TSception':
-                    X = X.unsqueeze(1)
                 outputs = self.model(X)
-                if len(outputs.shape) == 1:
-                    outputs = outputs.unsqueeze(0)
+
                 loss = self.criterion(outputs, y)
 
                 total_loss += loss.item() * X.size(0)

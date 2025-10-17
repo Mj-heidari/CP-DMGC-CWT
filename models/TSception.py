@@ -53,6 +53,7 @@ class TSception(nn.Module):
         )
 
     def forward(self, x):
+        x = x.unsqueeze(1)
         y = self.Tception1(x)
         out = y
         y = self.Tception2(x)

@@ -288,6 +288,7 @@ class CE_stSENet(nn.Module):
         self.conv_classifier = Classification_Net(inc = outc_max//4, outc = class_num)
         
     def forward(self, x, if_pooling = 1):    
+        x = x.unsqueeze(2)
         embedding_x = self.embedding(x)      
         cat_x = torch.cat((embedding_x, x), 1)
         for i in range(1, self.fi-2):
