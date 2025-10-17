@@ -95,10 +95,9 @@ class filterBank(object):
             dataOut = signal.lfilter(b, a, data, axis=axis)
         return dataOut
 
-    def __call__(self, data1):
+    def __call__(self, eeg):
 
-        data = copy.deepcopy(data1)
-        d = data['data']
+        d = copy.deepcopy(eeg)
 
         # initialize output
         out  = np.zeros([*d.shape, len(self.filtBank)])
@@ -112,8 +111,7 @@ class filterBank(object):
         if len(self.filtBank) <= 1:
             out =np.squeeze(out, axis = 2)
 
-        data['data'] = torch.from_numpy(out).float()
-        return data
+        return torch.from_numpy(out).float()
 
 
 class Conv2dWithConstraint(nn.Conv2d):
@@ -369,15 +367,9 @@ class FBMSNet(nn.Module):
 
         self.fc = self.LastBlock(size[1],nClass)
 
-        self.f = filterBank([[4,8],[8,12],[12,16],[16,20],[20,24],[24,28],[28,32],[32,36],[36,40]], 128)
-
     def forward(self, x):
 
-
-        new_x = []
-        for i in range(x.shape[0]):
-          new_x.append(self.f({'data':x[i].cpu()})['data'].unsqueeze(0))
-        x = torch.cat(new_x,dim =0).permute([0,3,1,2]).to('cuda')
+        x = x.permute([0,3,1,2])
 
         if len(x.shape) == 5:
             x = torch.squeeze(x.permute((0, 4, 2, 3, 1)), dim=4)

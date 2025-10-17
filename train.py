@@ -472,10 +472,17 @@ if __name__ == "__main__":
     else:
         online_transforms = []
 
+    offline_transforms=[]
+
+    if args.model == 'FBMSNet':
+        from models.FBMSNet import filterBank
+        filter_bank = filterBank([[4,8],[8,12],[12,16],[16,20],[20,24],[24,28],[28,32],[32,36],[36,40]], 128)
+        offline_transforms = [filter_bank]
+
     dataset = CHBMITDataset(
         args.dataset_dir,
         use_uint16=args.use_uint16,
-        offline_transforms=[],
+        offline_transforms=offline_transforms,
         online_transforms=online_transforms,
         suffix=args.suffix,
         subject_id=args.subject_id
