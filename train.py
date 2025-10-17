@@ -432,6 +432,10 @@ def parse_arguments():
                        help='Inner CV method (for leave_one_preictal)')
     parser.add_argument('--n_fold', type=int, default=5,
                        help='Number of folds (for stratified CV)')
+    parser.add_argument('--inner_cv_shuffle', action='store_true',
+                       help='shuffle flag for inner cross validation')
+    parser.add_argument('--outer_cv_shuffle', action='store_true',
+                       help='shuffle flag for outer cross validation')
     
     # Other parameters
     parser.add_argument('--random_state', type=int, default=42,
@@ -503,7 +507,7 @@ if __name__ == "__main__":
     elif args.outer_cv_mode == "stratified":
         outer_cv_params.update({
             "n_fold": args.n_fold,
-            "shuffle": True
+            "shuffle": args.outer_cv_shuffle
         })
     
     inner_cv_params = {
@@ -515,7 +519,7 @@ if __name__ == "__main__":
     elif args.inner_cv_mode == "stratified":
         inner_cv_params.update({
             "n_fold": args.n_fold,
-            "shuffle": False
+            "shuffle": args.inner_cv_shuffle
         })
     
     # Run nested CV
