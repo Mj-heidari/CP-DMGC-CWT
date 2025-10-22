@@ -359,14 +359,20 @@ def infer_preictal_interactal(
     return raw
 
 
+import numpy as np
+import mne
+from typing import Set, Tuple
+
 def extract_segments_with_labels_bids(
     raw: mne.io.Raw,
     segment_sec: float = 5.0,
     overlap: float = 0.0,
     keep_labels: Set[str] = {"preictal", "interictal"},
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    preictal_oversample_factor: float = 1.0,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, list[dict]]:
     """
     Segment EEG into fixed-length epochs based on annotations.
+    Optionally oversample preictal segments by creating overlapping windows.
 
     Parameters
     ----------
@@ -375,38 +381,50 @@ def extract_segments_with_labels_bids(
     segment_sec : float
         Length of each segment in seconds.
     overlap : float
-        Overlap between consecutive segments in seconds.
+        Base overlap between consecutive segments in seconds (for non-preictal).
     keep_labels : set of str
         Annotation descriptions to keep (e.g., {"preictal", "interictal"}).
+    preictal_oversample_factor : float
+        Approximate factor by which to increase the number of preictal segments.
+        For example, 5.0 means ~5× more segments by using overlap internally.
+        Values <= 1.0 disable oversampling.
 
     Returns
     -------
     X : np.ndarray, shape (n_epochs, n_channels, n_times)
         Segmented EEG data.
     y : np.ndarray, shape (n_epochs,)
-        Labels corresponding to each segment (e.g., "preictal", "interictal").
+        Labels corresponding to each segment.
     group_ids : np.ndarray, shape (n_epochs,)
         IDs for the original annotation interval each segment came from.
-        Useful for splitting train/test at the subject or event level.
+    event_stats : list of dict
+        Summary info for each annotated event.
     """
     X, y, group_ids = [], [], []
     ann_counter = {lab: 0 for lab in keep_labels}  # counter for each label
     event_stats = []
 
-    for idx, (desc, onset, duration) in enumerate(
-        zip(
-            raw.annotations.description, raw.annotations.onset, raw.annotations.duration
-        )
+    for desc, onset, duration in zip(
+        raw.annotations.description, raw.annotations.onset, raw.annotations.duration
     ):
         if desc not in keep_labels:
             continue
 
-        # Segment only within this annotation
+        # Adjust overlap for preictal oversampling
+        if desc.lower() == "preictal" and preictal_oversample_factor > 1.0:
+            # Compute overlap ratio needed to roughly multiply samples by factor
+            # (1 / (1 - overlap_ratio)) ≈ factor → overlap_ratio ≈ 1 - 1/factor
+            overlap_ratio = 1.0 - 1.0 / preictal_oversample_factor
+            this_overlap = min(segment_sec * overlap_ratio, segment_sec - 0.01)
+        else:
+            this_overlap = overlap
+
+        # Crop and segment the annotation region
         segment_raw = raw.copy().crop(tmin=onset, tmax=onset + duration)
         epochs = mne.make_fixed_length_epochs(
             segment_raw,
             duration=segment_sec,
-            overlap=overlap,
+            overlap=this_overlap,
             preload=True,
             reject_by_annotation=True,  # ensures BAD/EDGE are dropped
         )
@@ -427,10 +445,12 @@ def extract_segments_with_labels_bids(
             "onset_sec": float(onset),
             "duration_sec": float(duration),
             "n_segments": len(epochs),
+            "applied_overlap_sec": float(this_overlap),
+            "applied_factor": float(preictal_oversample_factor if desc.lower() == "preictal" else 1.0),
         })
 
     if not X:
-        return np.empty((0,)), np.empty((0,)), np.empty((0,))
+        return np.empty((0,)), np.empty((0,)), np.empty((0,)), []
 
     X = np.concatenate(X, axis=0)
     y = np.array(y)

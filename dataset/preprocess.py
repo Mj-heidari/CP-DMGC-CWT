@@ -93,7 +93,7 @@ def process_chbmit_bids_dataset(
             plt.show()
 
         X, y, group_ids, event_stats = extract_segments_with_labels_bids(
-            raw_all, segment_sec=5, overlap=0.0, keep_labels={"preictal", "interictal"}
+            raw_all, segment_sec=5, overlap=0.0, keep_labels={"preictal", "interictal"}, preictal_oversample_factor=5
         )
 
         if show_statistics:
@@ -112,7 +112,7 @@ def process_chbmit_bids_dataset(
         # --- Save event stats to CSV ---
         stats_file = os.path.join(session_path, "eeg/event_stats.csv")
         with open(stats_file, "w", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=["event_id", "label", "onset_sec", "duration_sec", "n_segments"])
+            writer = csv.DictWriter(f, fieldnames=["event_id", "label", "onset_sec", "duration_sec", "n_segments", "applied_overlap_sec", "applied_factor"])
             writer.writeheader()
             writer.writerows(event_stats)
         print(f"Saved event stats to {stats_file}")
