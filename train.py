@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from sklearn.metrics import roc_auc_score, accuracy_score, classification_report
 from tqdm import tqdm
@@ -292,7 +293,7 @@ def run_nested_cv(
         val_aucs = np.array([r['best_val_auc'] for r in fold_results['inner_fold_results']])
         test_probs_stack = np.stack(test_probs_ensemble)
 
-        pearson_corr, spearman_corr = visualizer.compute_prediction_correlation(
+        _ = visualizer.compute_prediction_correlation(
             test_probs_stack,
             tlabels,
             save_path=f"{run_dir}/folds/fold_{fold+1}_preictal_corr.png",

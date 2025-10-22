@@ -2,7 +2,6 @@ import os
 import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.metrics import confusion_matrix, f1_score, roc_auc_score
-from scipy.stats import spearmanr
 
 class Visualizer:
     def __init__(self, run_dir="runs", metric_for_best="auc", only_curves=False, only_best=False):
@@ -113,8 +112,8 @@ class Visualizer:
 
 def compute_prediction_correlation(test_probs_stack, tlabels, save_path=None, show=False):
     """
-    Compute Pearson and Spearman correlation matrices between model predictions
-    for label=1 (preictal) samples and save them as a single plot.
+    Compute Pearson correlation between model predictions for label=1 (preictal) samples
+    and plot it alongside the average ± std of predictions across models in time order.
 
     Args:
         test_probs_stack (np.ndarray): Shape (n_models, n_samples), predicted probabilities per model.
@@ -124,46 +123,50 @@ def compute_prediction_correlation(test_probs_stack, tlabels, save_path=None, sh
 
     Returns:
         pearson_corr (np.ndarray): Pearson correlation matrix.
-        spearman_corr (np.ndarray): Spearman rank correlation matrix.
     """
     mask = (tlabels == 1)
     if not np.any(mask):
         print("⚠️ No label=1 samples found in test set — correlation skipped.")
-        return None, None
+        return None
 
     probs_preictal = test_probs_stack[:, mask]
     n_models = probs_preictal.shape[0]
+    n_samples = probs_preictal.shape[1]
 
     # --- Pearson correlation (linear)
     pearson_corr = np.corrcoef(probs_preictal)
 
-    # --- Spearman correlation (ranking)
-    spearman_corr = np.zeros((n_models, n_models))
-    for i in range(n_models):
-        for j in range(n_models):
-            rho, _ = spearmanr(probs_preictal[i], probs_preictal[j])
-            spearman_corr[i, j] = rho
+    # --- Average and std across models for each preictal sample (in order)
+    mean_probs = probs_preictal.mean(axis=0)
+    std_probs = probs_preictal.std(axis=0)
 
     # --- Plot both
     fig, axes = plt.subplots(1, 2, figsize=(12, 5))
-    cmaps = ["coolwarm", "viridis"]
-    titles = ["Pearson Correlation (Linear)", "Spearman Correlation (Rank)"]
-    corr_matrices = [pearson_corr, spearman_corr]
 
-    for ax, corr, title, cmap in zip(axes, corr_matrices, titles, cmaps):
-        im = ax.imshow(corr, cmap=cmap, vmin=-1, vmax=1)
-        ax.set_title(title)
-        ax.set_xlabel("Model Index")
-        ax.set_ylabel("Model Index")
+    # Left: correlation matrix
+    im = axes[0].imshow(pearson_corr, cmap="coolwarm", vmin=-1, vmax=1)
+    axes[0].set_title("Pearson Correlation Between Models")
+    axes[0].set_xlabel("Model Index")
+    axes[0].set_ylabel("Model Index")
 
-        # Add numeric labels
-        for i in range(n_models):
-            for j in range(n_models):
-                ax.text(j, i, f"{corr[i, j]:.2f}",
-                        ha="center", va="center", color="black", fontsize=8)
+    for i in range(n_models):
+        for j in range(n_models):
+            axes[0].text(j, i, f"{pearson_corr[i, j]:.2f}",
+                         ha="center", va="center", color="black", fontsize=8)
 
-        cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-        cbar.set_label("Correlation")
+    cbar = plt.colorbar(im, ax=axes[0], fraction=0.046, pad=0.04)
+    cbar.set_label("Correlation")
+
+    # Right: mean ± std plot
+    x = np.arange(n_samples)
+    axes[1].plot(x, mean_probs, color='blue', label='Mean prediction')
+    axes[1].fill_between(x, mean_probs - std_probs, mean_probs + std_probs,
+                         color='blue', alpha=0.2, label='±1 STD')
+    axes[1].set_title("Preictal Predictions Across Models")
+    axes[1].set_xlabel("Preictal Sample Index (time order)")
+    axes[1].set_ylabel("Predicted Probability")
+    axes[1].set_ylim(0, 1)
+    axes[1].legend()
 
     plt.tight_layout()
     if save_path:
@@ -172,4 +175,4 @@ def compute_prediction_correlation(test_probs_stack, tlabels, save_path=None, sh
     elif show:
         plt.show()
 
-    return pearson_corr, spearman_corr
+    return pearson_corr
