@@ -14,6 +14,7 @@ import json
 import logging
 from datetime import datetime
 import pickle
+import visualizer 
 
 warnings.filterwarnings("ignore")
 
@@ -35,7 +36,10 @@ class Trainer:
             X, y = X.to(self.device), y.to(self.device)
 
             optimizer.zero_grad()
-            outputs = self.model(X)
+            outputs: torch.Tensor = self.model(X)
+
+            if outputs.dim() < 2:
+                outputs = outputs.unsqueeze(0)
 
             loss = self.criterion(outputs, y)
             loss.backward()
@@ -58,7 +62,10 @@ class Trainer:
             for X, y in tqdm(loader, desc="Evaluating", leave=False):
                 X, y = X.to(self.device), y.to(self.device)
         
-                outputs = self.model(X)
+                outputs: torch.Tensor = self.model(X)
+
+                if outputs.dim() < 2:
+                    outputs = outputs.unsqueeze(0)
 
                 loss = self.criterion(outputs, y)
 
@@ -202,6 +209,8 @@ def run_nested_cv(
 
     logging.info(f"Starting nested CV with {len(list(make_cv_splitter(dataset, **outer_cv_params)))} outer folds")
 
+    vis = visualizer.Visualizer(run_dir=run_dir, metric_for_best="auc", only_curves=True, only_best=True)
+    vis2 = visualizer.Visualizer(run_dir=run_dir, metric_for_best="auc", only_best=True)
     # Outer CV
     for fold, (train_val_dataset, test_dataset) in enumerate(make_cv_splitter(dataset, **outer_cv_params)):
         logging.info(f"\n===== Outer Fold {fold+1} =====")
@@ -218,7 +227,7 @@ def run_nested_cv(
         # Inner CV
         inner_splits = list(make_cv_splitter(train_val_dataset, **inner_cv_params))
         logging.info(f"Inner CV: {len(inner_splits)} folds")
-        
+        vis2.reset()
         for inner_fold, (train_dataset, val_dataset) in enumerate(inner_splits):
             logging.info(f"  Inner Fold {inner_fold+1}")
 
@@ -236,12 +245,16 @@ def run_nested_cv(
 
             # Training loop
             inner_fold_log = []
+            vis.reset()
             for epoch in range(1, epochs + 1):
                 tr_loss, tr_acc = trainer.train_one_epoch(train_loader, optimizer)
-                val_loss, val_acc, val_auc, _, _, _, _ = trainer.evaluate(val_loader)
+                val_loss, val_acc, val_auc, _, vprobs, vpreds, vlabels = trainer.evaluate(val_loader)
                 
                 # Save best model checkpoint
                 trainer.save_checkpoint(epoch, val_auc, fold+1, inner_fold+1)
+
+                vis.update(epoch, tr_loss, tr_acc, val_loss, val_acc, vprobs, vpreds, vlabels)
+                vis.render(fold, inner_fold, vprobs, vpreds, vlabels)
                 
                 scheduler.step()
                 
@@ -263,7 +276,10 @@ def run_nested_cv(
             trainer.load_best_model()
             
             # Predict test set for ensemble
-            _, _, _, _, test_probs, _, _ = trainer.evaluate(test_loader)
+            test_loss, test_acc, test_auc, _, test_probs, tpreds, tlabels = trainer.evaluate(test_loader)
+            vis2.update(inner_fold, 0, 0, test_loss, test_acc, test_probs, tpreds, tlabels)
+            vis2.render(fold, "test", test_probs, tpreds, tlabels)
+
             test_probs_ensemble.append(test_probs)
             
             fold_results['inner_fold_results'].append({
@@ -275,6 +291,12 @@ def run_nested_cv(
 
         val_aucs = np.array([r['best_val_auc'] for r in fold_results['inner_fold_results']])
         test_probs_stack = np.stack(test_probs_ensemble)
+
+        pearson_corr, spearman_corr = visualizer.compute_prediction_correlation(
+            test_probs_stack,
+            tlabels,
+            save_path=f"{run_dir}/folds/fold_{fold+1}_preictal_corr.png",
+        )
 
         # Normalize or softmax weights
         weights = val_aucs / val_aucs.sum()
