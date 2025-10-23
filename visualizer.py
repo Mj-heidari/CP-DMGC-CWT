@@ -48,7 +48,7 @@ class Visualizer:
         self.history["fpr"].append(fpr)
 
         # Track best epoch
-        metric_value = val_auc if self.metric_for_best == "auc" else val_f1
+        metric_value = val_auc if self.metric_for_best == "auc" else -val_loss
         if metric_value > self.best_metric:
             self.best_metric = metric_value
             self.best_epoch_data = (vprobs.copy(), vpreds.copy(), vlabels.copy(), epoch)
@@ -62,7 +62,7 @@ class Visualizer:
         epochs = self.history["epoch"]
         ax.plot(epochs, self.history["val_acc"], label="Val Accuracy")
         ax.plot(epochs, self.history["val_auc"], label="Val AUC")
-        # ax.plot(epochs, self.history["val_f1"], label="Val F1")
+        ax.plot(epochs, self.history["val_loss"], label="Val Loss")
         ax.plot(epochs, self.history["tpr"], label="Sensitivity (TPR)")
         ax.plot(epochs, self.history["fpr"], label="False Alarm (FPR)")
         ax.set_xlabel("Epoch")

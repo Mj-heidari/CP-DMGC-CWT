@@ -2,9 +2,10 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
-from sklearn.metrics import roc_auc_score, accuracy_score, classification_report, confusion_matrix
+from sklearn.metrics import roc_auc_score, accuracy_score, classification_report
 from tqdm import tqdm
 from dataset.dataset import CHBMITDataset, MilDataloader, make_cv_splitter
+import torch.nn.functional as F
 
 import numpy as np
 import warnings
@@ -14,8 +15,31 @@ import json
 import logging
 from datetime import datetime
 import pickle
+import visualizer
 
 warnings.filterwarnings("ignore")
+
+def mil_confident_loss(instance_logits, bag_label, lambda_entropy=0.5, pos_gain=2.0):
+    if bag_label.item() == 1:
+        # Entropy computed directly from logits
+        logsumexp = torch.logsumexp(instance_logits, dim=-1)  # log(∑ e^z)
+        probs = torch.softmax(instance_logits, dim=-1)
+        p_logit_dot = (probs * instance_logits).sum(dim=-1)
+        entropy = logsumexp - p_logit_dot
+        entropy_loss = entropy.mean()
+
+        # Positive bag: MIL mean + confidence
+        bag_logit = instance_logits.mean(dim=0, keepdim=True)
+        bag_loss = F.cross_entropy(bag_logit, bag_label.unsqueeze(0))
+        total_loss = pos_gain * bag_loss + lambda_entropy * entropy_loss
+    else:
+        # Negative bag: per-instance CE (supervised)
+        bag_loss = F.cross_entropy(instance_logits, bag_label.repeat(instance_logits.size(0)))
+        total_loss = bag_loss.mean()
+
+    return total_loss
+
+
 
 
 class Trainer:
@@ -29,7 +53,7 @@ class Trainer:
 
         self.use_mil = use_mil
 
-    def aggregate_outputs(self, outputs, labels, bag_size=8, aggregator_1="max", aggregator_0="mean"):
+    def aggregate_outputs(self, outputs, labels, bag_size=8, aggregator_1="mean", aggregator_0="mean"):
         """
         Group samples in the batch by their label (0 or 1) and aggregate outputs
         in smaller bags (e.g., size 8). The last bag can be smaller if not divisible.
@@ -86,54 +110,31 @@ class Trainer:
             else:
                 X_flat = X
 
-            if self.model.__class__.__name__ == 'CE_stSENet':
-                X_flat = X_flat.unsqueeze(2)
-            elif self.model.__class__.__name__ == 'EEGNet' or self.model.__class__.__name__ == 'TSception':
-                X_flat = X_flat.unsqueeze(1)
-
             outputs = self.model(X_flat)
+
+            if len(outputs.shape) == 1:
+                outputs = outputs.unsqueeze(0)
 
             if self.use_mil:
                 outputs = outputs.view(B, N, -1)
+                total_bag_loss = 0.0
                 bag_outputs = []
-                ys = []
-                for i in range(X.shape[0]):  # loop over bags
-                    if y[i] == 1:
-                        bag_out, _ = torch.max(outputs[i], dim=0)
-                        bag_outputs.append(bag_out)
-                        ys.append(1)
-                    else:
-                        # bag_out = torch.mean(outputs[i], dim=0)
-                        # bag_outputs.append(bag_out)
-                        # ys.append(0)
-                        for j in range(N):
-                            bag_outputs.append(outputs[i, j])
-                            ys.append(0)
-                    
+                for i in range(B):
+                    # use the confident MIL loss
+                    bag_loss = mil_confident_loss(outputs[i], y[i], lambda_entropy=0.1)
+                    total_bag_loss += bag_loss
+
+                    # store mean output for metrics
+                    bag_out = torch.sigmoid(outputs[i]).mean(dim=0)
+                    bag_outputs.append(bag_out)
+
+                loss = total_bag_loss / B
                 bag_outputs = torch.stack(bag_outputs)
-                ys = torch.tensor(ys, device=y.device)
+                ys = y
             else:
                 bag_outputs = outputs
                 ys = y
-
-            if len(bag_outputs.shape) == 1:
-                bag_outputs = bag_outputs.unsqueeze(0)
-
-            pos_mask = ys == 1
-            neg_mask = ys == 0
-
-            loss = 0.0
-
-            if pos_mask.any():
-                loss_pos = self.criterion(bag_outputs[pos_mask], torch.ones_like(ys[pos_mask]))
-                if self.use_mil:
-                    loss = loss + loss_pos * N# scale positives if desired
-                else:
-                    loss = loss + loss_pos
-
-            if neg_mask.any():
-                loss_neg = self.criterion(bag_outputs[neg_mask], torch.zeros_like(ys[neg_mask]))
-                loss = loss + loss_neg
+                loss = self.criterion(bag_outputs, ys)
 
             loss.backward()
             optimizer.step()
@@ -145,10 +146,7 @@ class Trainer:
 
         avg_loss = total_loss / (len(train_loader) * train_loader.batch_size)
         acc = accuracy_score(all_labels, all_preds)
-        tn, fp, fn, tp = confusion_matrix(all_labels, all_preds).ravel().tolist()
-        TRP = tp / (tp + fn)
-        FPR = fp / (fp + tn)
-        return avg_loss, acc, TRP, FPR
+        return avg_loss, acc
 
     def evaluate(self, loader):
         self.model.eval()
@@ -164,54 +162,37 @@ class Trainer:
                 else:
                     X_flat = X
             
-                if self.model.__class__.__name__ == 'CE_stSENet':
-                    X_flat = X_flat.unsqueeze(2)
-                elif self.model.__class__.__name__ == 'EEGNet' or self.model.__class__.__name__ == 'TSception':
-                    X_flat = X_flat.unsqueeze(1)
-
                 outputs = self.model(X_flat)
+
+                if len(outputs.shape) == 1:
+                    outputs = outputs.unsqueeze(0)
 
                 if self.use_mil:
                     outputs = outputs.view(B, N, -1)
+                    total_bag_loss = 0.0
                     bag_outputs = []
-                    ys = []
-                    for i in range(X.shape[0]):  # loop over bags
-                        if y[i] == 1:
-                            bag_out, _ = torch.max(outputs[i], dim=0)
-                            bag_outputs.append(bag_out)
-                            ys.append(1)
-                        else:
-                            # bag_out = torch.mean(outputs[i], dim=0)
-                            # bag_outputs.append(bag_out)
-                            # ys.append(0)
-                            for j in range(N):
-                                bag_outputs.append(outputs[i, j])
-                                ys.append(0)
-                        
+                    for i in range(B):
+                        # use the confident MIL loss
+                        bag_loss = mil_confident_loss(outputs[i], y[i], lambda_entropy=0.1)
+                        total_bag_loss += bag_loss
+
+                        # store mean output for metrics
+                        bag_out = torch.sigmoid(outputs[i]).mean(dim=0)
+                        bag_outputs.append(bag_out)
+
+                    loss = total_bag_loss / B
                     bag_outputs = torch.stack(bag_outputs)
-                    ys = torch.tensor(ys, device=y.device)
+                    ys = y
                 else:
                     bag_outputs = outputs
                     ys = y
+                    loss = self.criterion(bag_outputs, ys)
+
 
                 if len(bag_outputs.shape) == 1:
                     bag_outputs = bag_outputs.unsqueeze(0)
-                    
-                pos_mask = ys == 1
-                neg_mask = ys == 0
-
-                loss = 0.0
-
-                if pos_mask.any():
-                    loss_pos = self.criterion(bag_outputs[pos_mask], torch.ones_like(ys[pos_mask]))
-                    if self.use_mil:
-                        loss = loss + loss_pos * N# scale positives if desired
-                    else:
-                        loss = loss + loss_pos
-
-                if neg_mask.any():
-                    loss_neg = self.criterion(bag_outputs[neg_mask], torch.zeros_like(ys[neg_mask]))
-                    loss = loss + loss_neg
+ 
+                loss = self.criterion(bag_outputs, ys)
 
                 total_loss += loss.item() * X.shape[0]
                 probs = torch.softmax(bag_outputs, dim=1)[:, 1].cpu().numpy()
@@ -353,6 +334,8 @@ def run_nested_cv(
 
     logging.info(f"Starting nested CV with {len(list(make_cv_splitter(dataset, **outer_cv_params)))} outer folds")
 
+    vis = visualizer.Visualizer(run_dir=run_dir, metric_for_best="else", only_curves=True, only_best=True)
+    vis2 = visualizer.Visualizer(run_dir=run_dir, metric_for_best="else", only_best=True)
     # Outer CV
     for fold, (train_val_dataset, test_dataset) in enumerate(make_cv_splitter(dataset, **outer_cv_params)):
         logging.info(f"\n===== Outer Fold {fold+1} =====")
@@ -369,13 +352,13 @@ def run_nested_cv(
         # Inner CV
         inner_splits = list(make_cv_splitter(train_val_dataset, **inner_cv_params))
         logging.info(f"Inner CV: {len(inner_splits)} folds")
-        
+        vis2.reset()
         for inner_fold, (train_dataset, val_dataset) in enumerate(inner_splits):
             logging.info(f"  Inner Fold {inner_fold+1}")
 
             # Create undersampled train loader
             train_loader = MilDataloader(train_dataset, batch_size=batch_size, shuffle=True, bag_size=2 )
-            val_loader = MilDataloader(val_dataset, batch_size=batch_size, shuffle=False, bag_size=4, balance=False)
+            val_loader = MilDataloader(val_dataset, batch_size=batch_size, shuffle=False, bag_size=4, balance=True)
             test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
             # Model & trainer
@@ -387,17 +370,18 @@ def run_nested_cv(
 
             # Training loop
             inner_fold_log = []
+            vis.reset()
+            train_loader.bag_size = 2
             for epoch in range(1, epochs + 1):
-                tr_loss, tr_acc, TPR, FPR = trainer.train_one_epoch(train_loader, optimizer)
-                val_loss, val_acc, val_auc, _, _, all_preds, all_labels = trainer.evaluate(val_loader)
+                tr_loss, tr_acc = trainer.train_one_epoch(train_loader, optimizer)
+                val_loss, val_acc, val_auc, _, vprobs, vpreds, vlabels = trainer.evaluate(val_loader)
                 
-                tn, fp, fn, tp = confusion_matrix(all_labels, all_preds).ravel().tolist()
-                TPR_val = tp / (tp + fn)
-                FPR_val = fp / (fp + tn)
-                # metric = TPR_val/(FPR_val+10e-5)
-                metric = -val_loss
                 # Save best model checkpoint
+                metric = -val_loss
                 trainer.save_checkpoint(epoch, metric, fold+1, inner_fold+1)
+
+                vis.update(epoch, tr_loss, tr_acc, val_loss, val_acc, vprobs, vpreds, vlabels)
+                vis.render(fold, inner_fold, vprobs, vpreds, vlabels)
                 
                 scheduler.step()
                 
@@ -412,18 +396,23 @@ def run_nested_cv(
                 inner_fold_log.append(epoch_info)
                 
                 logging.info(f"Epoch {epoch:02d} | "
-                          f"Train {tr_loss:.4f}/{TPR:.4f}/{FPR:.4f}/{TPR/(FPR+10e-3):.4f} | "
-                          f"Val {val_loss:.4f}/{val_auc:.4f}/{TPR_val:.4f}/{FPR_val:.4f}/{TPR_val/(FPR_val+10e-3):.4f}")
+                          f"Train {tr_loss:.4f}/{tr_acc:.4f} | "
+                          f"Val {val_loss:.4f}/{val_acc:.4f}/{val_auc:.4f}")
                 
-                train_loader.bag_size = min(train_loader.bag_size+1 ,4)
-                # val_loader.bag_size = min(val_loader.bag_size+1, 16)
+                # if (epoch + 1) % 5 == 0:
+                #     train_loader.bag_size = min(train_loader.bag_size+1 ,4)
+                #     val_loader.bag_size = min(val_loader.bag_size+1, 4)  
+                #     print("bag size increased, new bag size: ",train_loader.bag_size)              
 
             # Load best model for test prediction
             trainer.load_best_model()
             
             # Predict test set for 
             trainer.use_mil = False
-            _, _, _, _, test_probs, _, _ = trainer.evaluate(test_loader)
+            test_loss, test_acc, test_auc, _, test_probs, tpreds, tlabels = trainer.evaluate(test_loader)
+            vis2.update(inner_fold, 0, 0, test_loss, test_acc, test_probs, tpreds, tlabels)
+            vis2.render(fold, "test", test_probs, tpreds, tlabels)
+
             test_probs_ensemble.append(test_probs)
             
             fold_results['inner_fold_results'].append({
@@ -433,8 +422,22 @@ def run_nested_cv(
                 'model_path': trainer.best_model_path
             })
 
-        # Ensemble (mean across inner models)
-        final_probs = np.mean(test_probs_ensemble, axis=0)
+        val_aucs = np.array([r['best_val_auc'] for r in fold_results['inner_fold_results']])
+        test_probs_stack = np.stack(test_probs_ensemble)
+
+        _ = visualizer.compute_prediction_correlation(
+            test_probs_stack,
+            tlabels,
+            save_path=f"{run_dir}/folds/fold_{fold+1}_preictal_corr.png",
+        )
+
+        # Normalize or softmax weights
+        weights = val_aucs / val_aucs.sum()
+        # weights = np.exp(val_aucs) / np.exp(val_aucs).sum()  # optional softmax weighting
+
+        # Weighted ensemble
+        final_probs = np.tensordot(weights, test_probs_stack, axes=1)
+
         
         # Apply moving average
         final_probs_ma = moving_average_predictions(final_probs, moving_avg_window)
