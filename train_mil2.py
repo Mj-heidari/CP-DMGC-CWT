@@ -6,6 +6,7 @@ from sklearn.metrics import roc_auc_score, accuracy_score, classification_report
 from tqdm import tqdm
 from dataset.dataset import CHBMITDataset, MilDataloader, make_cv_splitter
 import torch.nn.functional as F
+from scipy.stats import wasserstein_distance
 
 import numpy as np
 import warnings
@@ -19,27 +20,18 @@ import visualizer
 
 warnings.filterwarnings("ignore")
 
-def mil_confident_loss(instance_logits, bag_label, lambda_entropy=0.5, pos_gain=2.0):
+def mil_confident_loss(instance_logits, bag_label, T=5, pos_gain=2.0):
     if bag_label.item() == 1:
-        # Entropy computed directly from logits
-        logsumexp = torch.logsumexp(instance_logits, dim=-1)  # log(∑ e^z)
-        probs = torch.softmax(instance_logits, dim=-1)
-        p_logit_dot = (probs * instance_logits).sum(dim=-1)
-        entropy = logsumexp - p_logit_dot
-        entropy_loss = entropy.mean()
-
-        # Positive bag: MIL mean + confidence
-        bag_logit = instance_logits.mean(dim=0, keepdim=True)
+        weights = torch.softmax(instance_logits[:, 1] / T, dim=0).unsqueeze(-1)  
+        bag_logit = (weights * instance_logits).sum(dim=0, keepdim=True)
         bag_loss = F.cross_entropy(bag_logit, bag_label.unsqueeze(0))
-        total_loss = pos_gain * bag_loss + lambda_entropy * entropy_loss
+        total_loss = pos_gain * bag_loss 
     else:
         # Negative bag: per-instance CE (supervised)
         bag_loss = F.cross_entropy(instance_logits, bag_label.repeat(instance_logits.size(0)))
         total_loss = bag_loss.mean()
 
     return total_loss
-
-
 
 
 class Trainer:
@@ -52,48 +44,6 @@ class Trainer:
         self.best_model_path = None
 
         self.use_mil = use_mil
-
-    def aggregate_outputs(self, outputs, labels, bag_size=8, aggregator_1="mean", aggregator_0="mean"):
-        """
-        Group samples in the batch by their label (0 or 1) and aggregate outputs
-        in smaller bags (e.g., size 8). The last bag can be smaller if not divisible.
-        Returns aggregated predictions and labels for loss computation.
-        """
-        aggregated = []
-        aggregated_labels = []
-
-        if bag_size == 1:
-            return outputs, labels
-        
-        for label in [0, 1]:
-            mask = labels == label
-            if not torch.any(mask):
-                continue
-            
-            aggregator = aggregator_1 if label == 1 else aggregator_0
-
-            group_outputs = outputs[mask]  # (n_samples_in_group, num_classes)
-            n = group_outputs.size(0)
-
-            # Split group into smaller bags
-            for i in range(0, n, bag_size):
-                bag = group_outputs[i:i + bag_size]
-
-                if aggregator == "max":
-                    agg_out, _ = torch.max(bag, dim=0)
-                elif aggregator == "mean":
-                    agg_out = torch.mean(bag, dim=0)
-
-                aggregated.append(agg_out.unsqueeze(0))
-                aggregated_labels.append(torch.tensor([label], device=labels.device))
-
-        if len(aggregated) == 0:
-            # Fallback to original outputs if no aggregation was done
-            return outputs, labels
-
-        aggregated = torch.cat(aggregated, dim=0)
-        aggregated_labels = torch.cat(aggregated_labels, dim=0)
-        return aggregated, aggregated_labels
 
 
     def train_one_epoch(self, train_loader, optimizer):
@@ -121,7 +71,7 @@ class Trainer:
                 bag_outputs = []
                 for i in range(B):
                     # use the confident MIL loss
-                    bag_loss = mil_confident_loss(outputs[i], y[i], lambda_entropy=0.1)
+                    bag_loss = mil_confident_loss(outputs[i], y[i])
                     total_bag_loss += bag_loss
 
                     # store mean output for metrics
@@ -173,7 +123,7 @@ class Trainer:
                     bag_outputs = []
                     for i in range(B):
                         # use the confident MIL loss
-                        bag_loss = mil_confident_loss(outputs[i], y[i], lambda_entropy=0.1)
+                        bag_loss = mil_confident_loss(outputs[i], y[i])
                         total_bag_loss += bag_loss
 
                         # store mean output for metrics
@@ -192,8 +142,6 @@ class Trainer:
                 if len(bag_outputs.shape) == 1:
                     bag_outputs = bag_outputs.unsqueeze(0)
  
-                loss = self.criterion(bag_outputs, ys)
-
                 total_loss += loss.item() * X.shape[0]
                 probs = torch.softmax(bag_outputs, dim=1)[:, 1].cpu().numpy()
                 preds = torch.argmax(bag_outputs, dim=1).cpu().numpy()
@@ -357,8 +305,8 @@ def run_nested_cv(
             logging.info(f"  Inner Fold {inner_fold+1}")
 
             # Create undersampled train loader
-            train_loader = MilDataloader(train_dataset, batch_size=batch_size, shuffle=True, bag_size=2 )
-            val_loader = MilDataloader(val_dataset, batch_size=batch_size, shuffle=False, bag_size=4, balance=True)
+            train_loader = MilDataloader(train_dataset, batch_size=batch_size, shuffle=True, bag_size=4)
+            val_loader = DataLoader(val_dataset, batch_size=256, shuffle=False)
             test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
             # Model & trainer
@@ -371,16 +319,22 @@ def run_nested_cv(
             # Training loop
             inner_fold_log = []
             vis.reset()
-            train_loader.bag_size = 2
             for epoch in range(1, epochs + 1):
+                trainer.use_mil = True
                 tr_loss, tr_acc = trainer.train_one_epoch(train_loader, optimizer)
+                trainer.use_mil = False
                 val_loss, val_acc, val_auc, _, vprobs, vpreds, vlabels = trainer.evaluate(val_loader)
                 
-                # Save best model checkpoint
-                metric = -val_loss
+                # Compute Wasserstein distance between positive and negative probabilities
+                pos_probs = vprobs[vlabels == 1]
+                neg_probs = vprobs[vlabels == 0]
+                val_wdist = wasserstein_distance(pos_probs, neg_probs)
+             
+                # Use Wasserstein distance as selection metric
+                metric = val_wdist
                 trainer.save_checkpoint(epoch, metric, fold+1, inner_fold+1)
 
-                vis.update(epoch, tr_loss, tr_acc, val_loss, val_acc, vprobs, vpreds, vlabels)
+                vis.update(epoch, tr_loss, tr_acc, val_wdist, val_acc, vprobs, vpreds, vlabels)
                 vis.render(fold, inner_fold, vprobs, vpreds, vlabels)
                 
                 scheduler.step()
@@ -433,7 +387,6 @@ def run_nested_cv(
 
         # Normalize or softmax weights
         weights = val_aucs / val_aucs.sum()
-        # weights = np.exp(val_aucs) / np.exp(val_aucs).sum()  # optional softmax weighting
 
         # Weighted ensemble
         final_probs = np.tensordot(weights, test_probs_stack, axes=1)
