@@ -16,7 +16,8 @@ class ProbabilityCalibrator:
         Args:
             method: 'percentile', 'beta', 'isotonic', or 'temperature'
             target_preictal_percentile: For percentile method, what % of preictal 
-                                       samples should be around threshold 0.5
+                                       samples should be ABOVE threshold 0.5
+                                       (e.g., 10 means only top 10% detected)
         """
         self.method = method
         self.target_percentile = target_preictal_percentile
@@ -64,7 +65,13 @@ class ProbabilityCalibrator:
     def _fit_percentile(self, val_probs, val_labels):
         """
         Fit sigmoid-like transformation where target_percentile% of preictal 
-        samples have probability around 0.5.
+        samples have probability ABOVE 0.5.
+        
+        This means we map the (100 - target_percentile)th percentile TO 0.5.
+        
+        Example: target_percentile=10 means:
+        - 10% of preictals above 0.5 (high confidence detections)
+        - 90% of preictals below 0.5 (ignored to reduce FPR)
         
         Transformation: sigmoid(a * logit(p) + b)
         """
@@ -75,16 +82,18 @@ class ProbabilityCalibrator:
             self.params = {'a': 1.0, 'b': 0.0}
             return
         
-        # Find the probability value at target percentile
-        target_prob = np.percentile(preictal_probs, self.target_percentile)
+        # CRITICAL FIX: To have X% above 0.5, we map the (100-X)th percentile to 0.5
+        # This pushes probabilities DOWN, not UP
+        target_prob = np.percentile(preictal_probs, 100 - self.target_percentile)
         
         # We want: sigmoid(a * logit(target_prob) + b) = 0.5
         # This means: a * logit(target_prob) + b = 0
         # So: b = -a * logit(target_prob)
         
         # We also want to preserve some spread. Use another percentile as anchor.
-        high_percentile = min(self.target_percentile + 40, 90)
-        high_prob = np.percentile(preictal_probs, high_percentile)
+        # For the high end, we want a probability that should map to ~0.9
+        high_percentile_value = 100 - max(self.target_percentile - 40, 1)
+        high_prob = np.percentile(preictal_probs, high_percentile_value)
         
         # We want high_prob to map to ~0.9
         # sigmoid(a * logit(high_prob) + b) = 0.9

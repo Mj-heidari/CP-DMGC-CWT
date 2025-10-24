@@ -642,7 +642,6 @@ def run_nested_cv_with_calibration(
 
     return all_results
 
-
 def parse_arguments():
     parser = argparse.ArgumentParser(description='Nested Cross-Validation for Seizure Prediction')
 
@@ -703,7 +702,7 @@ def parse_arguments():
                        choices=['percentile', 'beta', 'isotonic', 'temperature'],
                        help='Probability calibration method')
     parser.add_argument('--target_percentile', type=int, default=10,
-                       help='Target percentile for percentile calibration (e.g., 10 means 10%% of preictal samples at threshold)')
+                       help='Target %% of preictal samples ABOVE threshold 0.5 (e.g., 10 = only top 10%% detected, reduces FPR)')
     
     args = parser.parse_args()
     if args.config:
