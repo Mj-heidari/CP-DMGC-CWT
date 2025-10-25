@@ -10,9 +10,14 @@ from models.rgnn import RGNN_Model
 from models.dgcnn2 import DGCNN_Model
 from models.dgcnn import DGCNN
 from models.conformer import Conformer
+from models.TSLANet import TSLANet
+from models.LMDA import LMDA
+from models.EEG_GNN_SSL import DCRNNModel_classification, get_adjacency_matrix
 import torch.nn as nn
 import torch
 from functools import partial
+import numpy as np
+import os
 
 
 channels = [
@@ -245,6 +250,48 @@ def get_builder(model: str = "CE-stSENet"):
                 input_dim=18, 
                 encoder_dim=32, 
                 num_encoder_layers=3
+            )
+            return builder
+        case "TSLANet":
+            builder = model_builder(
+                TSLANet,
+                num_classes=2,         
+                chunk_size=640,        
+                num_electrodes=18,     
+                patch_size=32,         
+                emb_dim=128,           
+                dropout_rate=0.15,     
+                depth=2                
+            )
+            return builder
+        case "LMDA":
+            builder = model_builder(
+                LMDA,
+                num_classes=2,
+                chans=18,
+                samples=640,
+                depth=9,
+                kernel=75,
+                channel_depth1=24,
+                channel_depth2=9,
+                ave_depth=1,
+                avepool=5
+            )
+            return builder
+        case "EEG_GNN_SSL":
+            adj_mx = get_adjacency_matrix(num_channels=18, adj_type='imt')
+            builder = model_builder(
+                DCRNNModel_classification,
+                num_classes=2,
+                adj_mx=adj_mx, 
+                num_nodes=18,
+                num_rnn_layers=2,
+                rnn_units=64,
+                input_dim=1,
+                max_diffusion_step=2,
+                dcgru_activation='tanh',
+                filter_type='laplacian',
+                dropout=0.1,
             )
             return builder
         case _:
