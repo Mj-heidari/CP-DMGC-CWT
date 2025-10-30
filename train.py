@@ -746,6 +746,20 @@ if __name__ == "__main__":
         filter_bank = filterBank([[4,8],[8,12],[12,16],[16,20],[20,24],[24,28],[28,32],[32,36],[36,40]], 128)
         offline_transforms = [filter_bank]
 
+    if args.model == 'EEGBandClassifier':
+        from transforms.signal.filterbank import FilterBank
+        filter_bank = FilterBank(
+            band_dict={
+                # "delta": (0.5, 4),
+                # "theta": (4, 8),
+                "alpha": (8, 14),
+                "beta": (14, 30),
+                "gamma": (30, 48),
+            },
+            sampling_rate=128,
+        )
+        offline_transforms = [filter_bank]
+
     dataset = CHBMITDataset(
         args.dataset_dir,
         use_uint16=args.use_uint16,

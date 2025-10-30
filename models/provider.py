@@ -12,12 +12,12 @@ from models.dgcnn import DGCNN
 from models.conformer import Conformer
 from models.TSLANet import TSLANet
 from models.LMDA import LMDA
+from models.MB_dMGC_CWTFFNet import MB_dMGC_CWTFFNet
+from models.EEGBandClassifier import EEGBandClassifier
 from models.EEG_GNN_SSL import DCRNNModel_classification, get_adjacency_matrix
 import torch.nn as nn
 import torch
 from functools import partial
-import numpy as np
-import os
 
 
 channels = [
@@ -292,6 +292,12 @@ def get_builder(model: str = "CE-stSENet"):
                 dcgru_activation='tanh',
                 filter_type='laplacian',
                 dropout=0.1,
+            )
+            return builder
+        case "EEGBandClassifier":
+            builder = model_builder(
+                EEGBandClassifier,
+                n_bands = 3,
             )
             return builder
         case _:
