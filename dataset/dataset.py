@@ -8,8 +8,8 @@ import math
 from .utils import invert_uint16_scaling
 from tqdm import tqdm
 from collections import defaultdict
+from sklearn import utils
 from sklearn.model_selection import StratifiedKFold
-
 
 class CHBMITDataset(Dataset):
     def __init__(
@@ -359,21 +359,96 @@ def leave_one_preictal_group_out(dataset, method="balanced", random_state=0):
         yield SubsetWithInfo(dataset, train_idx), SubsetWithInfo(dataset, test_idx)
 
 
-def cross_validation(dataset, shuffle=False, n_fold=5, random_state=0):
+def cross_validation(dataset, shuffle=True, n_fold=5, random_state=0):
+    """
+    Custom cross-validation splitter:
+      - Preictal groups are each split chronologically into n_fold strata.
+        In fold i, one stratum per group becomes validation; the rest training.
+      - Interictal samples are pooled, shuffled, and split globally into n_fold parts.
+      - Works with both CHBMITDataset and SubsetWithInfo.
+    """
+    rng = np.random.RandomState(random_state)
+    y = np.array(dataset.y)
+    group_ids = np.array(dataset.group_ids)
+    base_indices = np.arange(len(dataset))
+
+    # Separate preictal / interictal
+    pre_mask = y == 1
+    inter_mask = ~pre_mask
+
+    pre_groups = np.unique(group_ids[pre_mask])
+    inter_indices = base_indices[inter_mask]
+
+    # Shuffle interictal samples if requested
+    if shuffle:
+        inter_indices = utils.shuffle(inter_indices, random_state=rng)
+
+    # Split interictal into n roughly equal folds
+    inter_split = np.array_split(inter_indices, n_fold)
+
+    # For each preictal group, split chronologically into n_fold strata
+    group_splits = {}
+    M = 10
+    for gid in pre_groups:
+            inds = base_indices[group_ids == gid]
+            inds = np.sort(inds)  # chronological order
+
+            # Optionally shuffle within the group (randomizes within small windows)
+            if shuffle:
+                inds = np.array(inds)
+                rng.shuffle(inds)
+
+            # Assign M consecutive samples to each fold in round-robin
+            splits = [[] for _ in range(n_fold)]
+            i = 0
+            while i < len(inds):
+                for fold in range(n_fold):
+                    if i + M <= len(inds):
+                        splits[fold].extend(inds[i:i+M])
+                    else:
+                        # last chunk: assign remaining samples evenly across folds
+                        remaining = len(inds) - i
+                        per_fold = remaining // (n_fold - fold)
+                        splits[fold].extend(inds[i:i+per_fold])
+                        i += per_fold - 1  # -1 because will increment at end
+                    i += M
+
+            # convert lists to arrays
+            group_splits[gid] = [np.array(s) for s in splits]
+
+    # Generate folds
+    for i_fold in range(n_fold):
+        val_indices = []
+        train_indices = []
+
+        # Add interictal split for this fold
+        val_indices.extend(inter_split[i_fold])
+        train_indices.extend(np.concatenate([x for j, x in enumerate(inter_split) if j != i_fold]))
+
+        # Add preictal splits group by group
+        for gid, splits in group_splits.items():
+            val_indices.extend(splits[i_fold])
+            train_indices.extend(np.concatenate([x for j, x in enumerate(splits) if j != i_fold]))
+
+        # Convert to numpy arrays
+        val_indices = np.array(val_indices)
+        train_indices = np.array(train_indices)
+
+        # Optionally shuffle train set (to randomize interictal order)
+        if shuffle:
+            train_indices = utils.shuffle(train_indices, random_state=rng)
+            val_indices = utils.shuffle(val_indices, random_state=rng)
+
+        # Yield the two SubsetWithInfo objects
+        yield SubsetWithInfo(dataset, train_indices), SubsetWithInfo(dataset, val_indices)
+
+def old_cross_validation(dataset, shuffle=False, n_fold=5, random_state=0):
     """
     Cross-validation splitter:
       - Splits dataset into n_fold stratified folds based on y.
       - Handles Dataset and Subset objects.
-    """
-    if isinstance(dataset, Subset):
-        base_ds = dataset.dataset
-        indices = np.array(dataset.indices)
-        indices.sort()
-        y = np.array(base_ds.y)[indices]
-        dataset.y = y
-    else:
-        indices = np.arange(len(dataset))
-        y = np.array(dataset.y)
+    """ 
+    y = np.array(dataset.y)
 
     if not shuffle:
         random_state = None
@@ -381,7 +456,6 @@ def cross_validation(dataset, shuffle=False, n_fold=5, random_state=0):
 
     for train_idx, test_idx in skf.split(np.zeros(len(y)), y):
         yield SubsetWithInfo(dataset, train_idx), SubsetWithInfo(dataset, test_idx)
-
 
 def make_cv_splitter(dataset, mode="stratified", **kwargs):
     """
@@ -424,10 +498,10 @@ if __name__ == "__main__":
     )
 
     train_val_dataset, test_dataset = next(
-        make_cv_splitter(dataset, "leave_one_preictal")
+        make_cv_splitter(dataset, "leave_one_preictal",method = "balanced_shuffled")
     )
     train_dataset, val_dataset = next(
-        make_cv_splitter(train_val_dataset, "leave_one_preictal")
+        make_cv_splitter(train_val_dataset, "stratified")
     )
     print("------------")
     print(dataset.__len__())
@@ -451,8 +525,59 @@ if __name__ == "__main__":
     print(np.unique(test_dataset.group_ids[test_dataset.get_class_indices()[0]]))
     print("------------")
     print(train_dataset.group_ids[train_dataset.get_class_indices()[0]].__len__())
-    dataloader = MilDataloader(train_dataset, batch_size=16, bag_size=16)
+    dataloader = UnderSampledDataLoader(test_dataset)
+    # dataloader = MilDataloader(train_dataset, batch_size=16, bag_size=16)
     print(dataloader.__len__())
+    print(val_dataset.base_indices[0:30])
     for batch_data, batch_labels in iter(dataloader):
         print(batch_data.shape)
         print(batch_labels)
+        break
+    
+    print("============ INNER-FOLD DISTRIBUTION CHECK ============")
+    from collections import Counter
+
+    # Recreate the inner folds iterator for reproducibility
+    n_folds = 5  # or match your make_cv_splitter setting
+    inner_folds = list(make_cv_splitter(train_val_dataset, "stratified", n_fold=n_folds))
+
+    fold_stats = []
+    for fold_idx, (train_idx, val_idx) in enumerate(inner_folds):
+        train_samples = len(train_idx)
+        val_samples = len(val_idx)
+
+        train_preictal_idx = train_dataset.get_class_indices()[0]
+        val_preictal_idx = val_dataset.get_class_indices()[0]
+
+        n_train_preictal = len(train_preictal_idx)
+        n_train_interictal = train_samples - n_train_preictal
+        n_val_preictal = len(val_preictal_idx)
+        n_val_interictal = val_samples - n_val_preictal
+
+        print(f"\n--- Inner Fold {fold_idx+1}/{len(inner_folds)} ---")
+        print(f"Train: {train_samples} samples  (preictal={n_train_preictal}, interictal={n_train_interictal})")
+        print(f"Val:   {val_samples} samples  (preictal={n_val_preictal}, interictal={n_val_interictal})")
+
+        # Unique groups
+        train_groups = np.unique(train_dataset.group_ids[train_preictal_idx])
+        val_groups = np.unique(val_dataset.group_ids[val_preictal_idx])
+        print(f"Train preictal groups: {train_groups}")
+        print(f"Val preictal groups:   {val_groups}")
+
+        # Group counts table
+        train_counts = Counter(train_dataset.group_ids[train_preictal_idx])
+        val_counts = Counter(val_dataset.group_ids[val_preictal_idx])
+
+        print("\nTrain preictal group counts:")
+        for g in sorted(train_counts.keys()):
+            print(f"  {g:<12}: {train_counts[g]}")
+
+        print("Val preictal group counts:")
+        for g in sorted(val_counts.keys()):
+            print(f"  {g:<12}: {val_counts[g]}")
+
+    print("\n============ SUMMARY ============")
+    for i, (train_idx, val_idx) in enumerate(inner_folds):
+        n_train_preictal = len(train_dataset.get_class_indices()[0])
+        n_val_preictal = len(val_dataset.get_class_indices()[0])
+        print(f"Fold {i}: train preictal={n_train_preictal}, val preictal={n_val_preictal}, train groups={len(train_groups)}, val groups={len(val_groups)}")
