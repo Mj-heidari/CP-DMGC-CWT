@@ -93,7 +93,7 @@ def process_chbmit_bids_dataset(
             plt.show()
 
         X, y, group_ids, event_stats = extract_segments_with_labels_bids(
-            raw_all, segment_sec=5, overlap=0.0, keep_labels={"preictal", "interictal"}, preictal_oversample_factor=5
+            raw_all, segment_sec=5, overlap=0.0, keep_labels={"preictal", "interictal"}, preictal_oversample_factor=1
         )
 
         if show_statistics:
