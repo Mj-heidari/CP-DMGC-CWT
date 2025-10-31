@@ -4,7 +4,7 @@ import torch.nn.functional as F
 
 
 class BandFeatureExtractor(nn.Module):
-    def __init__(self, n_channels, kernel_t_len, kernel_c_len=None, n_output_features=16, dilation=1, pool_kernel=2, pool_stride=2):
+    def __init__(self, n_channels, kernel_t_len, kernel_c_len=None, n_output_features=16, dilation=1, pool_kernel=8, pool_stride=8):
         super().__init__()
         self.n_channels = n_channels
         if kernel_c_len is None:
@@ -12,11 +12,11 @@ class BandFeatureExtractor(nn.Module):
 
         # Temporal convolution: (1, kernel_t_len)
         self.temp_conv = nn.Conv2d(
-            1, 1, kernel_size=(1, kernel_t_len), padding=(0, kernel_t_len//2), dilation=(1, dilation), bias=False
+            1, 16, kernel_size=(1, kernel_t_len), padding=(0, kernel_t_len//2), dilation=(1, dilation), bias=False
         )
         # Channel convolution: (kernel_c_len, 1)
         self.channel_conv = nn.Conv2d(
-            1, n_output_features, kernel_size=(kernel_c_len, 1), padding=(0, 0), bias=False
+            16, n_output_features, kernel_size=(kernel_c_len, 1), padding=(0, 0), bias=False
         )
 
         self.bn = nn.BatchNorm2d(n_output_features)
@@ -83,10 +83,11 @@ class EEGBandClassifier(nn.Module):
         self.embedding_net = EEGBandEmbeddingNet(n_channels=18, n_bands=n_bands, n_output_features=16).cuda()
         input_dim = self.embedding_net.extractors[0].channel_conv.out_channels * len(self.embedding_net.extractors)
         self.classifier = nn.Sequential(
-            nn.Linear(input_dim, 128),
+            nn.Linear(input_dim, 64),
             nn.ReLU(),
-            nn.BatchNorm1d(128),
-            nn.Linear(128, n_classes)
+            nn.Dropout(p=0.2),
+            nn.BatchNorm1d(64),
+            nn.Linear(64, n_classes)
         )
 
     def forward(self, x):
@@ -96,6 +97,7 @@ class EEGBandClassifier(nn.Module):
 
 if __name__ == "__main__":
     from network_debugger import NetworkDebugger
+    from torchinfo import summary
 
     torch.manual_seed(1)
     model = EEGBandClassifier(n_classes=2).cuda()
@@ -104,7 +106,7 @@ if __name__ == "__main__":
     debugger.register_hooks()
 
     # Fake EEG input: (B, C, Bn, T)
-    x = torch.randn(2, 18, 2, 640).cuda()
+    x = torch.randn(2, 18, 5, 640).cuda()
     y = model(x)
 
     print("\nOutput shape:", y.shape)
@@ -115,3 +117,5 @@ if __name__ == "__main__":
     loss.backward()
 
     debugger.remove_hooks()
+
+    summary(model, (2, 18, 5, 640))
