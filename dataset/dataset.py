@@ -358,6 +358,32 @@ def leave_one_preictal_group_out(dataset, method="balanced", random_state=0):
 
         yield SubsetWithInfo(dataset, train_idx), SubsetWithInfo(dataset, test_idx)
 
+def split_into_strata(base_indices, group_ids, groups, N=5, M=3):
+    group_splits = {}
+    for gid in groups:
+        inds = base_indices[group_ids == gid]
+        inds = np.sort(inds)  # chronological order
+        if len(inds) == 0:
+            continue
+        # Assign M consecutive samples to each fold in round-robin
+        splits = [[] for _ in range(N)]
+        i = 0
+        while i < len(inds):
+            for fold in range(N):
+                if i + M <= len(inds):
+                    splits[fold].extend(inds[i:i+M])
+                else:
+                    # last chunk: assign remaining samples evenly across folds
+                    remaining = len(inds) - i
+                    per_fold = remaining // (N - fold)
+                    splits[fold].extend(inds[i:i+per_fold])
+                    i += per_fold - 1  # -1 because will increment at end
+                i += M
+
+        # convert lists to arrays
+        group_splits[gid] = [np.array(s) for s in splits]
+    return group_splits
+
 
 def cross_validation(dataset, shuffle=True, n_fold=5, random_state=0):
     """
@@ -377,44 +403,11 @@ def cross_validation(dataset, shuffle=True, n_fold=5, random_state=0):
     inter_mask = ~pre_mask
 
     pre_groups = np.unique(group_ids[pre_mask])
-    inter_indices = base_indices[inter_mask]
+    inter_groups = np.unique(group_ids[inter_mask])
 
-    # Shuffle interictal samples if requested
-    if shuffle:
-        inter_indices = utils.shuffle(inter_indices, random_state=rng)
-
-    # Split interictal into n roughly equal folds
-    inter_split = np.array_split(inter_indices, n_fold)
-
-    # For each preictal group, split chronologically into n_fold strata
-    group_splits = {}
-    M = 10
-    for gid in pre_groups:
-            inds = base_indices[group_ids == gid]
-            inds = np.sort(inds)  # chronological order
-
-            # Optionally shuffle within the group (randomizes within small windows)
-            if shuffle:
-                inds = np.array(inds)
-                rng.shuffle(inds)
-
-            # Assign M consecutive samples to each fold in round-robin
-            splits = [[] for _ in range(n_fold)]
-            i = 0
-            while i < len(inds):
-                for fold in range(n_fold):
-                    if i + M <= len(inds):
-                        splits[fold].extend(inds[i:i+M])
-                    else:
-                        # last chunk: assign remaining samples evenly across folds
-                        remaining = len(inds) - i
-                        per_fold = remaining // (n_fold - fold)
-                        splits[fold].extend(inds[i:i+per_fold])
-                        i += per_fold - 1  # -1 because will increment at end
-                    i += M
-
-            # convert lists to arrays
-            group_splits[gid] = [np.array(s) for s in splits]
+    # For each interictal and preictal group, split chronologically into n_fold strata
+    int_group_splits = split_into_strata(base_indices, group_ids, inter_groups, N=n_fold)
+    pre_group_splits = split_into_strata(base_indices, group_ids, pre_groups, N=n_fold)
 
     # Generate folds
     for i_fold in range(n_fold):
@@ -422,11 +415,12 @@ def cross_validation(dataset, shuffle=True, n_fold=5, random_state=0):
         train_indices = []
 
         # Add interictal split for this fold
-        val_indices.extend(inter_split[i_fold])
-        train_indices.extend(np.concatenate([x for j, x in enumerate(inter_split) if j != i_fold]))
+        for gid, splits in int_group_splits.items():
+            val_indices.extend(splits[i_fold])
+            train_indices.extend(np.concatenate([x for j, x in enumerate(splits) if j != i_fold]))
 
         # Add preictal splits group by group
-        for gid, splits in group_splits.items():
+        for gid, splits in pre_group_splits.items():
             val_indices.extend(splits[i_fold])
             train_indices.extend(np.concatenate([x for j, x in enumerate(splits) if j != i_fold]))
 
