@@ -5,7 +5,7 @@ from typing import Callable, List
 import glob
 import os
 import math
-from utils import invert_uint16_scaling
+from .utils import invert_uint16_scaling
 from tqdm import tqdm
 from collections import defaultdict
 from sklearn import utils
