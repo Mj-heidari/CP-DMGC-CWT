@@ -5,7 +5,7 @@ from typing import Callable, List
 import glob
 import os
 import math
-from .utils import invert_uint16_scaling
+from utils import invert_uint16_scaling
 from tqdm import tqdm
 from collections import defaultdict
 from sklearn import utils
@@ -135,27 +135,47 @@ class UnderSampledDataLoader:
         
         self.preictal_indices = np.array(self.preictal_indices)
         self.interictal_indices = np.array(self.interictal_indices)
-        
-    def __iter__(self):
+        self.count_seen = {idx: 0 for idx in self.interictal_indices}
+        self.all_indices = self.get_indices()
+
+    def get_indices(self):    
         # Randomly undersample interictal to match preictal count
         n_preictal = len(self.preictal_indices)
         n_interictal = len(self.interictal_indices)
         
         if n_interictal > n_preictal:
-            # Randomly sample interictal indices
-            selected_interictal = np.random.choice(
-                self.interictal_indices, size=n_preictal, replace=False
-            )
-            all_indices = np.concatenate([self.preictal_indices, selected_interictal])
+            # Convert to arrays for easy masking
+            interictal_array = np.array(list(self.count_seen.keys()))
+            seen_counts = np.array(list(self.count_seen.values()))
+
+            min_count = seen_counts.min()
+            min_mask = seen_counts == min_count
+            min_indices = interictal_array[min_mask]
+
+            if len(min_indices) < n_preictal:
+                remaining = n_preictal - len(min_indices)
+                not_min_indices = interictal_array[~min_mask]
+                selected_extra = np.random.choice(not_min_indices, size=remaining, replace=False)
+                selected_interictal = np.concatenate([min_indices, selected_extra])
+            else:
+                selected_interictal = np.random.choice(min_indices, size=n_preictal, replace=False)
         else:
-            all_indices = np.concatenate([self.preictal_indices, self.interictal_indices])
-        
+            selected_interictal = self.interictal_indices
+
+        for idx in selected_interictal:
+            self.count_seen[idx] += 1
+
+        all_indices = np.concatenate([self.preictal_indices, selected_interictal])
         if self.shuffle:
             np.random.shuffle(all_indices)
+        return all_indices
+        
+    def __iter__(self):
+        self.all_indices = self.get_indices()
         
         # Create batches
-        for i in range(0, len(all_indices), self.batch_size):
-            batch_indices = all_indices[i:i + self.batch_size]
+        for i in range(0, len(self.all_indices), self.batch_size):
+            batch_indices = self.all_indices[i:i + self.batch_size]
             batch_data = []
             batch_labels = []
             
@@ -167,10 +187,7 @@ class UnderSampledDataLoader:
             yield torch.stack(batch_data), torch.stack(batch_labels)
     
     def __len__(self):
-        n_preictal = len(self.preictal_indices)
-        n_interictal = len(self.interictal_indices)
-        total_samples = n_preictal + min(n_preictal, n_interictal)
-        return (total_samples + self.batch_size - 1) // self.batch_size
+        return (len(self.all_indices) + self.batch_size - 1) // self.batch_size
 
 
 class MilDataloader:
