@@ -212,6 +212,8 @@ class MilDataloader:
                 self.preictal_indices_grouped[dataset.group_ids[i]].append(i)
             else:
                 self.interictal_indices.append(i)
+        
+        self.count_seen = {idx: 0 for idx in self.interictal_indices}
 
         self.build_bags()
     
@@ -220,6 +222,7 @@ class MilDataloader:
         interictal_bags = []
 
         # --- Build preictal bags ---
+        total_preictal_bags = 0
         for group_inds in self.preictal_indices_grouped.values():
             inds = np.array(group_inds)
             np.random.shuffle(inds)
@@ -227,22 +230,45 @@ class MilDataloader:
             if n_bags > 0:
                 bags = np.array_split(inds[: n_bags * self.bag_size], n_bags)
                 preictal_bags.extend([(b, 1) for b in bags])
+                total_preictal_bags += n_bags
 
-        # --- Build interictal bags ---
-        inds = np.array(self.interictal_indices)
-        np.random.shuffle(inds)
-        n_bags = len(inds) // self.bag_size
-        if n_bags > 0:
-            bags = np.array_split(inds[: n_bags * self.bag_size], n_bags)
-            interictal_bags.extend([(b, 0) for b in bags])
+        # --- Build interictal bags (prefer unseen first) ---
+        interictal_array = np.array(list(self.count_seen.keys()))
+        seen_counts = np.array(list(self.count_seen.values()))
 
-        # --- Balance the number of bags ---
+        # Prefer indices that have been used less often
+        min_count = seen_counts.min()
+        min_mask = seen_counts == min_count
+        candidate_indices = interictal_array[min_mask]
+
+        # Determine how many interictal samples we actually need
+        # Initially match number of preictal bags if balance=True
         if self.balance:
-            n_pre = len(preictal_bags)
-            n_inter = len(interictal_bags)
-            if n_inter > n_pre:
-                import random
-                interictal_bags = random.sample(interictal_bags, n_pre)
+            n_needed_samples = total_preictal_bags * self.bag_size
+        else:
+            n_needed_samples = len(self.interictal_indices)
+
+        # Randomize within each usage level
+        np.random.shuffle(candidate_indices)
+
+        # If not enough unseen samples, fill with slightly more seen ones
+        if len(candidate_indices) < n_needed_samples:
+            remaining = n_needed_samples - len(candidate_indices)
+            others = interictal_array[~min_mask]
+            np.random.shuffle(others)
+            selected = np.concatenate([candidate_indices, others[:remaining]])
+        else:
+            selected = candidate_indices[:n_needed_samples]
+
+        # Update usage counter for selected indices
+        for idx in selected:
+            self.count_seen[idx] += 1
+
+        # Split selected indices into bags
+        n_bags_inter = len(selected) // self.bag_size
+        if n_bags_inter > 0:
+            bags = np.array_split(selected[: n_bags_inter * self.bag_size], n_bags_inter)
+            interictal_bags.extend([(b, 0) for b in bags])
 
         # --- Combine & shuffle all bags ---
         self.all_bags = preictal_bags + interictal_bags
