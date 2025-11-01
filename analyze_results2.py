@@ -32,7 +32,33 @@ def load_results(run_dir):
     return results, detailed_results, config
 
 
-def moving_average_predictions(probs, window_size=3):
+def moving_average_predictions_new(probs, y, window_size=3):
+    """Apply moving average to predictions"""
+    if len(probs) < window_size:
+        return probs
+    
+    y = np.array(y)
+    pre_mask = y == 1
+    inter_mask = ~pre_mask
+    
+    smoothed_probs = np.zeros_like(probs).astype(float)
+
+    def moving_avg(target_probs, win_size):
+        temp = np.zeros_like(target_probs)
+        for i in range(win_size, len(target_probs)):
+            start_idx = max(0, i - win_size + 1)
+            end_idx = i + 1
+            temp[i] = np.mean(target_probs[start_idx:end_idx])
+        return temp
+    
+    if len(probs[pre_mask]):
+        smoothed_probs[:len(probs[pre_mask])] = moving_avg(probs[pre_mask],window_size)
+    if len(probs[inter_mask]):
+        smoothed_probs[len(probs[pre_mask]):] = moving_avg(probs[inter_mask],window_size)
+    
+    return smoothed_probs
+
+def moving_average_predictions(probs, y, window_size=3):
     """Apply moving average to predictions"""
     if len(probs) < window_size:
         return probs
@@ -85,7 +111,7 @@ def analyze_moving_average_windows(results, run_dir, window_sizes=[1, 3, 5, 7, 1
         y_test = np.array(fold_result['predictions']['y_test'])
         
         if use_calibrated:
-            base_probs = np.array(fold_result['predictions']['final_probs_calibrated'])
+            base_probs = np.array(fold_result['predictions']['final_probs_original'])
         else:
             base_probs = np.array(fold_result['predictions']['final_probs'])
         
@@ -93,7 +119,7 @@ def analyze_moving_average_windows(results, run_dir, window_sizes=[1, 3, 5, 7, 1
             if ws == 1:
                 probs_ma = base_probs
             else:
-                probs_ma = moving_average_predictions(base_probs, ws)
+                probs_ma = moving_average_predictions_new(base_probs, y_test, ws)
             
             preds_ma = (probs_ma >= 0.5).astype(int)
             metric_auc, sensitivity, fpr_per_hour = compute_metrics(probs_ma, preds_ma, y_test)
