@@ -1,36 +1,23 @@
+
 import numpy as np
 from scipy.optimize import minimize
 from scipy.special import expit, logit
 from sklearn.isotonic import IsotonicRegression
+from typing import List, Tuple
 import logging
 
 
 class ProbabilityCalibrator:
-    """
-    Calibrates probability outputs to optimize sensitivity/FPR trade-off.
-    Fits transformation on validation data, applies to test data.
-    """
+    """Base class for probability calibration"""
     
-    def __init__(self, method='percentile', target_preictal_percentile=10):
-        """
-        Args:
-            method: 'percentile', 'beta', 'isotonic', or 'temperature'
-            target_preictal_percentile: For percentile method, what % of preictal 
-                                       samples should be ABOVE threshold 0.5
-                                       (e.g., 10 means only top 10% detected)
-        """
+    def __init__(self, method: str = 'percentile', **kwargs):
         self.method = method
-        self.target_percentile = target_preictal_percentile
-        self.params = {}
-        
-    def fit(self, val_probs, val_labels):
-        """
-        Fit calibration parameters on validation data.
-        
-        Args:
-            val_probs: Validation probabilities (N,)
-            val_labels: Validation labels (N,)
-        """
+        self.params = kwargs
+        self.is_fitted = False
+        self.calibration_params = {}
+    
+    def fit(self, val_probs: np.ndarray, val_labels: np.ndarray):
+        """Fit calibration parameters on validation data"""
         if self.method == 'percentile':
             self._fit_percentile(val_probs, val_labels)
         elif self.method == 'beta':
@@ -40,19 +27,16 @@ class ProbabilityCalibrator:
         elif self.method == 'temperature':
             self._fit_temperature(val_probs, val_labels)
         else:
-            raise ValueError(f"Unknown method: {self.method}")
-            
+            raise ValueError(f"Unknown calibration method: {self.method}")
+        
+        self.is_fitted = True
         return self
     
-    def transform(self, probs):
-        """
-        Apply calibration to new probabilities.
+    def transform(self, probs: np.ndarray) -> np.ndarray:
+        """Transform probabilities using fitted calibration"""
+        if not self.is_fitted:
+            raise ValueError("Calibrator not fitted yet")
         
-        Args:
-            probs: Probabilities to transform (N,)
-        Returns:
-            Calibrated probabilities (N,)
-        """
         if self.method == 'percentile':
             return self._transform_percentile(probs)
         elif self.method == 'beta':
@@ -67,37 +51,22 @@ class ProbabilityCalibrator:
         Fit sigmoid-like transformation where target_percentile% of preictal 
         samples have probability ABOVE 0.5.
         
-        This means we map the (100 - target_percentile)th percentile TO 0.5.
-        
-        Example: target_percentile=10 means:
-        - 10% of preictals above 0.5 (high confidence detections)
-        - 90% of preictals below 0.5 (ignored to reduce FPR)
-        
         Transformation: sigmoid(a * logit(p) + b)
         """
+        target_percentile = self.params.get('target_preictal_percentile', 10)
         preictal_probs = val_probs[val_labels == 1]
         
         if len(preictal_probs) == 0:
             logging.warning("No preictal samples in validation set")
-            self.params = {'a': 1.0, 'b': 0.0}
+            self.calibration_params = {'a': 1.0, 'b': 0.0}
             return
         
-        # CRITICAL FIX: To have X% above 0.5, we map the (100-X)th percentile to 0.5
-        # This pushes probabilities DOWN, not UP
-        target_prob = np.percentile(preictal_probs, 100 - self.target_percentile)
+        # To have X% above 0.5, we map the (100-X)th percentile to 0.5
+        target_prob = np.percentile(preictal_probs, 100 - target_percentile)
         
-        # We want: sigmoid(a * logit(target_prob) + b) = 0.5
-        # This means: a * logit(target_prob) + b = 0
-        # So: b = -a * logit(target_prob)
-        
-        # We also want to preserve some spread. Use another percentile as anchor.
-        # For the high end, we want a probability that should map to ~0.9
-        high_percentile_value = 100 - max(self.target_percentile - 40, 1)
+        # Use another percentile as anchor for the high end
+        high_percentile_value = 100 - max(target_percentile - 40, 1)
         high_prob = np.percentile(preictal_probs, high_percentile_value)
-        
-        # We want high_prob to map to ~0.9
-        # sigmoid(a * logit(high_prob) + b) = 0.9
-        # a * logit(high_prob) + b = logit(0.9) ≈ 2.197
         
         # Solve for a and b
         try:
@@ -115,19 +84,16 @@ class ProbabilityCalibrator:
             logging.warning("Failed to compute logit transformation, using identity")
             a, b = 1.0, 0.0
         
-        self.params = {'a': a, 'b': b, 'target_prob': target_prob}
+        self.calibration_params = {'a': a, 'b': b, 'target_prob': target_prob}
         logging.info(f"Percentile calibration: a={a:.4f}, b={b:.4f}, target_prob={target_prob:.4f}")
     
     def _transform_percentile(self, probs):
         """Apply percentile-based transformation"""
-        a = self.params['a']
-        b = self.params['b']
+        a = self.calibration_params['a']
+        b = self.calibration_params['b']
         
-        # Avoid numerical issues
         probs_clipped = np.clip(probs, 1e-7, 1-1e-7)
         logit_probs = logit(probs_clipped)
-        
-        # Apply affine transformation in logit space, then sigmoid back
         transformed = expit(a * logit_probs + b)
         
         return transformed
@@ -145,32 +111,28 @@ class ProbabilityCalibrator:
             log_1mp = np.log(1 - val_probs_clipped)
             calibrated = expit(a + b * log_p + c * log_1mp)
             
-            # Binary cross-entropy loss
             loss = -np.mean(
                 val_labels * np.log(calibrated + 1e-7) + 
                 (1 - val_labels) * np.log(1 - calibrated + 1e-7)
             )
             return loss
         
-        # Initialize near identity transformation
         init_params = [0.0, 1.0, 1.0]
-        
         result = minimize(loss_fn, init_params, method='L-BFGS-B')
         
-        self.params = {'a': result.x[0], 'b': result.x[1], 'c': result.x[2]}
+        self.calibration_params = {'a': result.x[0], 'b': result.x[1], 'c': result.x[2]}
         logging.info(f"Beta calibration: a={result.x[0]:.4f}, b={result.x[1]:.4f}, c={result.x[2]:.4f}")
     
     def _transform_beta(self, probs):
         """Apply beta calibration"""
         probs_clipped = np.clip(probs, 1e-7, 1-1e-7)
         
-        a = self.params['a']
-        b = self.params['b']
-        c = self.params['c']
+        a = self.calibration_params['a']
+        b = self.calibration_params['b']
+        c = self.calibration_params['c']
         
         log_p = np.log(probs_clipped)
         log_1mp = np.log(1 - probs_clipped)
-        
         transformed = expit(a + b * log_p + c * log_1mp)
         
         return transformed
@@ -200,7 +162,6 @@ class ProbabilityCalibrator:
             logit_p = logit(val_probs_clipped)
             calibrated = expit((logit_p - b) / T)
             
-            # Binary cross-entropy
             loss = -np.mean(
                 val_labels * np.log(calibrated + 1e-7) + 
                 (1 - val_labels) * np.log(1 - calibrated + 1e-7)
@@ -211,15 +172,15 @@ class ProbabilityCalibrator:
         result = minimize(loss_fn, init_params, method='L-BFGS-B',
                          bounds=[(0.1, 10.0), (-5.0, 5.0)])
         
-        self.params = {'T': result.x[0], 'b': result.x[1]}
+        self.calibration_params = {'T': result.x[0], 'b': result.x[1]}
         logging.info(f"Temperature calibration: T={result.x[0]:.4f}, b={result.x[1]:.4f}")
     
     def _transform_temperature(self, probs):
         """Apply temperature scaling"""
         probs_clipped = np.clip(probs, 1e-7, 1-1e-7)
         
-        T = self.params['T']
-        b = self.params['b']
+        T = self.calibration_params['T']
+        b = self.calibration_params['b']
         
         logit_p = logit(probs_clipped)
         transformed = expit((logit_p - b) / T)
@@ -227,16 +188,16 @@ class ProbabilityCalibrator:
         return transformed
 
 
-def calibrate_ensemble_predictions(
-    test_probs_stack,
-    val_probs_list,
-    val_labels_list,
-    val_aucs,
-    calibration_method='percentile',
-    target_percentile=10
-):
+def calibrate_ensemble(
+    test_probs_stack: np.ndarray,
+    val_probs_list: List[np.ndarray],
+    val_labels_list: List[np.ndarray],
+    val_aucs: np.ndarray,
+    calibration_method: str = 'percentile',
+    **calibration_params
+) -> Tuple[np.ndarray, List[ProbabilityCalibrator]]:
     """
-    Calibrate each inner fold's predictions on test data using validation data.
+    Calibrate ensemble predictions
     
     Args:
         test_probs_stack: (n_folds, n_test_samples) test probabilities
@@ -244,28 +205,22 @@ def calibrate_ensemble_predictions(
         val_labels_list: List of (n_val_samples,) validation labels per fold
         val_aucs: (n_folds,) validation AUCs for weighting
         calibration_method: Which calibration method to use
-        target_percentile: For percentile method
-        
-    Returns:
-        calibrated_probs: (n_test_samples,) weighted ensemble of calibrated predictions
-        calibrators: List of fitted calibrator objects
-    """
-    n_folds = test_probs_stack.shape[0]
-    calibrated_test_probs = []
-    calibrators = []
+        **calibration_params: Additional parameters (e.g., target_preictal_percentile)
     
-    for fold_idx in range(n_folds):
-        # Fit calibrator on validation data
-        calibrator = ProbabilityCalibrator(
-            method=calibration_method,
-            target_preictal_percentile=target_percentile
-        )
-        calibrator.fit(val_probs_list[fold_idx], val_labels_list[fold_idx])
-        
-        # Transform test probabilities
-        calibrated = calibrator.transform(test_probs_stack[fold_idx])
-        calibrated_test_probs.append(calibrated)
+    Returns:
+        calibrated_probs: Final calibrated probabilities
+        calibrators: List of fitted calibrators for each model
+    """
+    n_models = len(val_probs_list)
+    calibrators = []
+    calibrated_test_probs = []
+    
+    for i in range(n_models):
+        calibrator = ProbabilityCalibrator(method=calibration_method, **calibration_params)
+        calibrator.fit(val_probs_list[i], val_labels_list[i])
         calibrators.append(calibrator)
+        
+        calibrated_test_probs.append(calibrator.transform(test_probs_stack[i]))
     
     # Stack and ensemble
     calibrated_stack = np.stack(calibrated_test_probs)
