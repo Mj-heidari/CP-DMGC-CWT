@@ -214,19 +214,31 @@ def compute_prediction_correlation(test_probs_stack, tlabels, save_path=None, sh
 # CORE PROCESSING FUNCTIONS
 # ============================================================================
 
-def moving_average(probs: np.ndarray, window_size: int = 3) -> np.ndarray:
+def moving_average(probs: np.ndarray, y, window_size: int = 3) -> np.ndarray:
     """Apply moving average smoothing to predictions"""
     if len(probs) < window_size or window_size == 1:
         return probs
     
-    smoothed = np.copy(probs).astype(float)
-    for i in range(len(probs)):
-        start_idx = max(0, i - window_size + 1)
-        end_idx = i + 1
-        smoothed[i] = np.mean(probs[start_idx:end_idx])
+    y = np.array(y)
+    pre_mask = y == 1
+    inter_mask = ~pre_mask
     
-    return smoothed
+    smoothed_probs = np.zeros_like(probs).astype(float)
 
+    def moving_avg(target_probs, win_size):
+        temp = np.zeros_like(target_probs)
+        for i in range(win_size, len(target_probs)):
+            start_idx = max(0, i - win_size + 1)
+            end_idx = i + 1
+            temp[i] = np.mean(target_probs[start_idx:end_idx])
+        return temp
+    
+    if len(probs[pre_mask]):
+        smoothed_probs[:len(probs[pre_mask])] = moving_avg(probs[pre_mask],window_size)
+    if len(probs[inter_mask]):
+        smoothed_probs[len(probs[pre_mask]):] = moving_avg(probs[inter_mask],window_size)
+    
+    return smoothed_probs
 
 def weighted_ensemble(probs_stack: np.ndarray, weights: np.ndarray) -> np.ndarray:
     """Combine predictions using weighted average"""
@@ -393,7 +405,7 @@ class ResultsProcessor:
             if cal_method == 'none':
                 # No calibration
                 for ma_window in ma_windows:
-                    probs = moving_average(base_probs, ma_window) if ma_window > 1 else base_probs
+                    probs = moving_average(base_probs, y_test, ma_window) if ma_window > 1 else base_probs
                     
                     for threshold in thresholds:
                         preds = apply_threshold(probs, threshold)
@@ -424,7 +436,7 @@ class ResultsProcessor:
                     )
                     
                     for ma_window in ma_windows:
-                        probs = moving_average(cal_probs, ma_window) if ma_window > 1 else cal_probs
+                        probs = moving_average(cal_probs, y_test, ma_window) if ma_window > 1 else cal_probs
                         
                         for threshold in thresholds:
                             preds = apply_threshold(probs, threshold)
@@ -454,7 +466,7 @@ class ResultsProcessor:
                 )
                 
                 for ma_window in ma_windows:
-                    probs = moving_average(cal_probs, ma_window) if ma_window > 1 else cal_probs
+                    probs = moving_average(cal_probs, y_test, ma_window) if ma_window > 1 else cal_probs
                     
                     for threshold in thresholds:
                         preds = apply_threshold(probs, threshold)
