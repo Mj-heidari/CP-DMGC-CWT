@@ -360,17 +360,27 @@ class DynamicGraphConv(nn.Module):
         self.fc2 = nn.Linear((C * C) // reduction, C * C, bias=True)
 
         # --- Point-wise convolution kernels (two-layer MLP over feature dim) ---
-        self.q1 = nn.Linear(D, D, bias=True)
-        self.q2 = nn.Linear(D, D, bias=True)
+        self.q1 = nn.Sequential(
+            nn.Conv1d(in_channels=C, out_channels=C, kernel_size=1, bias=True),
+            nn.LayerNorm(D),
+            nn.ELU(),
+        )
+        self.q2 = nn.Sequential(
+            nn.Conv1d(in_channels=C, out_channels=C, kernel_size=1, bias=True),
+            nn.LayerNorm(D),
+            nn.ELU(),
+        )
 
         # init
         self._init_weights()
 
     def _init_weights(self):
         for m in [self.fc1, self.fc2, self.q1, self.q2]:
-            nn.init.xavier_uniform_(m.weight)
-            if m.bias is not None:
-                nn.init.zeros_(m.bias)
+            for layer in m.modules():
+                if isinstance(layer, (nn.Conv1d, nn.Linear)):
+                    nn.init.xavier_uniform_(layer.weight)
+                    if layer.bias is not None:
+                        nn.init.zeros_(layer.bias)
 
     def forward(self, x: torch.Tensor, A_init: torch.Tensor):
         """
@@ -395,8 +405,8 @@ class DynamicGraphConv(nn.Module):
         A_norm = A_dyn / deg                             # row-normalized adjacency
 
         # --- Step 2: Point-wise graph convolution ---
-        h = F.elu(self.q1(x))            # (B,C,D)
-        h = self.q2(h)                   # (B,C,D)
+        h = self.q1(x)              # (B, D, C)
+        h = self.q2(h)              # (B, D, C)
 
         # message passing: (C,C) @ (B,C,D)
         # Use einsum: (C,C) * (B,C,D) -> (B,C,D)
@@ -408,7 +418,7 @@ class DynamicGraphConv(nn.Module):
         return G, A_dyn
 
 class CWTFFNet(nn.Module):
-    def __init__(self, in_dims, d_k=64, d_v=64, hidden_dim=128, dropout=0.1, num_classes=2):
+    def __init__(self, in_dims, d_k=32, d_v=32, hidden_dim=32, dropout=0.1, num_classes=2):
         """
         Channel-Weighted Transformer Feature Fusion Network (CWTFFNet).
 
@@ -429,10 +439,13 @@ class CWTFFNet(nn.Module):
         self.WK = nn.ModuleList([nn.Linear(in_dim, d_k) for in_dim in in_dims])
         self.WV = nn.ModuleList([nn.Linear(in_dim, d_v) for in_dim in in_dims])
 
-        # Global CW-FFB (keeps feature dim)
-        self.ln = nn.LayerNorm(3 * d_v)
-        self.fc1 = nn.Linear(3 * d_v, 3 * d_v)
-        self.fc2 = nn.Linear(3 * d_v, 3 * d_v)
+        # Fully-Connected module
+        self.fc = nn.Sequential(
+            nn.LayerNorm(3 * d_v),
+            nn.Linear(3 * d_v, 3 * d_v),
+            nn.ReLU(),
+            nn.Linear(3 * d_v, 3 * d_v),
+        )
 
         # Feedforward module FM
         self.fm = nn.Sequential(
@@ -446,8 +459,8 @@ class CWTFFNet(nn.Module):
         # Classifier (input is flattened later → set dynamically)
         self.hidden_dim = hidden_dim
         self.num_classes = num_classes
-        self.out_fc1 = None
-        self.out_fc2 = None
+        self.out_fc1 = nn.Linear(18 * 3 * d_v, self.hidden_dim)
+        self.out_fc2 = nn.Linear(self.hidden_dim, self.num_classes)
 
     def forward(self, G_list, A_list, A_init):
         """
@@ -479,31 +492,22 @@ class CWTFFNet(nn.Module):
         Z_local = torch.cat(Z_heads, dim=-1)  # (B, C, 3*d_v)
 
         # 2) Global CW-FFB
-        Z_global = torch.matmul(A_init.unsqueeze(0), Z_local)  # (B, C, 3*d_v)
-        channel_weights = F.softmax(Z_local.mean(dim=1, keepdim=True), dim=-1)  # (B, 1, 3*d_v)
-        Z_global = Z_global * channel_weights  # channel-wise weighting
+        A_vec = F.softmax(torch.mean(A_init, dim=-1), dim=0)[None,:,None] 
+        channel_weights = F.softmax(Z_local.mean(dim=-1, keepdim=True), dim=1)
+        Z_global = Z_local * (A_vec * channel_weights)
 
-        # 3) Feedforward module
-        Z_ln = self.ln(Z_global)
-        Z_fc = self.fc2(F.relu(self.fc1(Z_ln)))
-        Z_fused = Z_fc + self.fm(Z_global)  # residual (B, C, 3*d_v)
+        # 3) Feedforward and Fully-Connected module
+        Z_fused = self.fc(Z_global) + self.fm(Z_global)
 
-        # 4) Classifier
-        out = Z_fused.reshape(B, -1)  # flatten (B, C*3*d_v)
-
-        # Lazy init classifier
-        if self.out_fc1 is None:
-            in_dim_total = out.shape[-1]  # C * 3*d_v
-            self.out_fc1 = nn.Linear(in_dim_total, self.hidden_dim).to(out.device)
-            self.out_fc2 = nn.Linear(self.hidden_dim, self.num_classes).to(out.device)
-
+        # 4) Classifier (simple MLP head)
+        out = Z_fused.flatten(start_dim=1)  
         out = F.relu(self.out_fc1(out))
         logits = self.out_fc2(out)
 
         return logits, Z_fused
 
 class MB_dMGC_CWTFFNet(nn.Module):
-    def __init__(self, in_ch=18, sampling_rate = 128, d_model=64, d_k=64, d_v=64, coords = None):
+    def __init__(self, in_ch=18, sampling_rate = 128, d_model=32, d_k=32, d_v=32, coords = None):
 
       super(MB_dMGC_CWTFFNet, self).__init__()
 
@@ -559,11 +563,21 @@ class MB_dMGC_CWTFFNet(nn.Module):
       return result[0]
 
 
-# Example input: batch of EEG trials
-B, C, T = 4, 18, 640
-x = torch.randn(B, C, T)  # EEG trials
-labels = torch.tensor([0, 1, 0, 1])  # binary labels
+if __name__ == "__main__":
+    from torchinfo import summary
 
-model = MB_dMGC_CWTFFNet()
-result = model(x)
-print(result)
+    torch.manual_seed(1)
+    model = MB_dMGC_CWTFFNet().cuda()
+
+    # Fake EEG input: (B, C, Bn, T)
+    x = torch.randn(4, 18, 640).cuda()
+    y = model(x)
+
+    print("\nOutput shape:", y.shape)
+
+    # Backward pass
+    labels = torch.tensor([0, 1, 0, 1]).cuda()
+    loss = F.cross_entropy(y, labels)
+    loss.backward()
+
+    summary(model, (2, 18, 640))

@@ -294,10 +294,15 @@ def get_builder(model: str = "CE-stSENet"):
                 dropout=0.1,
             )
             return builder
+        case "MB_dMGC_CWTFFNet":
+            builder = model_builder(
+                MB_dMGC_CWTFFNet,
+            )
+            return builder
         case "EEGBandClassifier":
             builder = model_builder(
                 EEGBandClassifier,
-                n_bands = 3,
+                n_bands = 5,
             )
             return builder
         case _:
