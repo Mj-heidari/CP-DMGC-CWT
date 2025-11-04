@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import numpy as np
 import math
 
 class MultiScaleTemporalConv(nn.Module):
@@ -525,7 +526,8 @@ class MB_dMGC_CWTFFNet(nn.Module):
       self.mbsc = MultiBandSpectralConv(fs=sampling_rate)
 
       if not coords:
-        coords = torch.rand(in_ch, 3)  # (x,y,z) positions of electrodes
+        coords = np.load("ch_locs.npy")
+        coords = torch.tensor(coords, dtype=torch.float)
 
       self.dist = torch.cdist(coords, coords, p=2)  # Euclidean distance matrix
 
@@ -547,16 +549,9 @@ class MB_dMGC_CWTFFNet(nn.Module):
 
       FS, A = self.mcse(x)
 
-    #   print(FT.shape)
-    #   print(FS.shape)
-    #   print(FR.shape)
-
       GT, AT = self.dgc_T(FT, A)
       GS, AS = self.dgc_S(FS, A)
       GR, AR = self.dgc_R(FR, A) 
-    #   print(GT.shape)
-    #   print(GS.shape)
-    #   print(GR.shape)
 
       result = self.cwtff([GT, GS, GR], [AT, AS, AR], A)
 
