@@ -197,7 +197,7 @@ class MultiChannelSpatialEncoding(nn.Module):
          - Extracts multi-channel spatial features FS ∈ R^{B×C×DS}.
     """
 
-    def __init__(self, channel_distances, out_channels=32, kernel_size=(3, 5)):
+    def __init__(self, channel_distances, out_channels=32, kernel_size=(18, 1)):
         """
         Args:
             channel_distances (torch.Tensor): (C, C) matrix of Euclidean distances
@@ -449,13 +449,13 @@ class MB_dMGC_CWTFFNet(nn.Module):
 
       super(MB_dMGC_CWTFFNet, self).__init__()
 
-      DT = 1920
-      DS = 5120
+      DT = 2560
+      DS = 2560
       DR = 640
 
       self.mstc = MultiScaleTemporalConv(
           in_channels=in_ch,
-          kernel_sizes=[5, 11, 23],   # different temporal spans
+          kernel_sizes=[5, 7, 11, 23],   # different temporal spans
           strides=1,                  # keep time length if paddings='same'
           paddings='same',            # requires PyTorch with padding='same' support
       )
@@ -468,7 +468,7 @@ class MB_dMGC_CWTFFNet(nn.Module):
 
       self.dist = torch.cdist(coords, coords, p=2)  # Euclidean distance matrix
 
-      self.mcse = MultiChannelSpatialEncoding(channel_distances=self.dist, out_channels=8, kernel_size=(3, 5))
+      self.mcse = MultiChannelSpatialEncoding(channel_distances=self.dist, out_channels=4, kernel_size=(in_ch, 1))
 
 
       self.dgc_T = DynamicGraphConv(in_ch, DT, reduction=16)
