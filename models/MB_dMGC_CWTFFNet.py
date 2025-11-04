@@ -153,13 +153,13 @@ class MultiBandSpectralConv(nn.Module):
             F_delta, F_theta, F_alpha, F_beta, F_gamma  (each (B, C, H_i))
             FR: (B, C, sum(H_i)) concatenated along time dim
         """
-        B, C, S = x.shape
+        # B, C, S = x.shape
         approx = x  # initial approximation coefficients
         details = []  # detail coefficients at each level 1..L
         approximations = []  # approximation after each level (we keep last too)
 
         # iterative DWT decomposition
-        for level in range(1, self.levels + 1):
+        for _ in range(1, self.levels + 1):
             # lowpass conv then downsample (approximation)
             low = self._conv_groups(approx, self.db4_low)     # (B, C, S_current)
             high = self._conv_groups(approx, self.db4_high)   # (B, C, S_current)
@@ -172,74 +172,11 @@ class MultiBandSpectralConv(nn.Module):
             approximations.append(low_ds) # store approximations too
             approx = low_ds                # feed into next iteration
 
-        # after L levels: 'approx' is the final approximation (lowest freq)
-        # Define physiological bands (Hz)
-        bands = {
-            'delta': (0.0, 4.0),
-            'theta': (4.0, 8.0),
-            'alpha': (8.0, 13.0),
-            'beta' : (13.0, 30.0),
-            'gamma': (30.0, 50.0)
-        }
-
-        # compute frequency band for each decomposition output:
-        # detail level l corresponds to freq (fs / 2^{l+1}, fs/2^{l})
-        # final approximation (after L) corresponds to (0, fs/2^{L+1})
-        level_bands = []
-        for l in range(1, self.levels + 1):
-            low_f = self.fs / (2 ** (l + 1))
-            high_f = self.fs / (2 ** l)
-            level_bands.append( (low_f, high_f) )  # detail l
-
-        approx_band = (0.0, self.fs / (2 ** (self.levels + 1)))
-
-        # Helper: compute overlap between two freq intervals
-        def overlap(a, b):
-            lo = max(a[0], b[0])
-            hi = min(a[1], b[1])
-            return max(0.0, hi - lo)
-
-        # Map each physiological band to the decomposition component (detail level or final approx)
-        # Choose the component (one of details[level-1] or approx) with maximal overlap.
-        band_to_tensor = {}
-        for name, band in bands.items():
-            best_score = -1.0
-            best_tensor = None
-
-            # check details
-            for idx, lvl_band in enumerate(level_bands):
-                score = overlap(band, lvl_band)
-                if score > best_score:
-                    best_score = score
-                    best_tensor = details[idx]
-
-            # check approximation (delta often maps here strongly)
-            score_approx = overlap(band, approx_band)
-            if score_approx > best_score:
-                best_score = score_approx
-                best_tensor = approx
-
-            # If no overlap found (e.g., fs too low), fallback heuristics:
-            if best_tensor is None:
-                # fallback: choose nearest-level detail by band center
-                band_center = 0.5 * (band[0] + band[1])
-                best_idx = min(range(len(level_bands)),
-                               key=lambda i: abs(0.5*(level_bands[i][0]+level_bands[i][1]) - band_center))
-                best_tensor = details[best_idx] if details else approx
-
-            band_to_tensor[name] = best_tensor  # (B, C, H_level)
-
         # Extract band tensors in order delta, theta, alpha, beta, gamma
-        F_delta = band_to_tensor['delta']
-        F_theta = band_to_tensor['theta']
-        F_alpha = band_to_tensor['alpha']
-        F_beta  = band_to_tensor['beta']
-        F_gamma = band_to_tensor['gamma']
+        Fδ, Fθ, Fα, Fβ, Fγ = approx, details[-1], details[-2], details[-3], details[-4]
+        FR = torch.cat([Fδ, Fθ, Fα, Fβ, Fγ], dim=2)
 
-        # Concatenate along time dimension (dim=2). They may have different lengths.
-        FR = torch.cat([F_delta, F_theta, F_alpha, F_beta, F_gamma], dim=2)
-
-        return F_delta, F_theta, F_alpha, F_beta, F_gamma, FR
+        return Fδ, Fθ, Fα, Fβ, Fγ, FR
 
 class MultiChannelSpatialEncoding(nn.Module):
     """
