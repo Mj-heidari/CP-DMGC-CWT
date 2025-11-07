@@ -1178,6 +1178,14 @@ def analyze_run(run_dir: str,
         ['variant', 'mean_auc', 'std_auc', 'mean_sensitivity', 'mean_fpr_per_hour']
     ]
     print(top_auc.to_string(index=False))
+
+    print("\n" + "="*80)
+    print("Top 10 Sensitivity and FPR:")
+    print("="*80)
+    top_sen_fpr = summary_df.sort_values(['mean_sensitivity', 'mean_fpr_per_hour'], ascending=[False, True])[
+        ['variant', 'mean_auc', 'std_auc', 'mean_sensitivity', 'mean_fpr_per_hour']
+    ]
+    print(top_sen_fpr[0:10].to_string(index=False))
     
     print("\n" + "="*80)
     print("CALIBRATION METHOD COMPARISON:")
