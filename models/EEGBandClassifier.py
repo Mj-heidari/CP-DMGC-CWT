@@ -60,6 +60,7 @@ class EEGBandEmbeddingNet(nn.Module):
                                  n_output_features=n_output_features)
             for i in range(n_bands)
         ])
+        self.band_conv = nn.Conv2d(16,32,kernel_size=(1,n_bands))
 
     def forward(self, x):
         """
@@ -70,24 +71,23 @@ class EEGBandEmbeddingNet(nn.Module):
         for i in range(H):
             band_x = x[:, :, i, :]  # (B, channels, n_times)
             feat = self.extractors[i](band_x)  # (B, n_output_features, T_out)
-            # optionally, global mean pool over time
-            feat = feat.mean(dim=-1)  # (B, n_output_features)
-            band_features.append(feat)
+            band_features.append(feat.unsqueeze(-1))
         # concatenate all bands
-        embedding = torch.cat(band_features, dim=1)  # (B, n_output_features * n_bands)
+        embedding = torch.cat(band_features, dim=-1)  # (B, n_output_features * n_bands)
+        embedding = self.band_conv(embedding)
+        embedding = torch.flatten(embedding.mean(dim=-2), start_dim=1)
         return embedding
 
 class EEGBandClassifier(nn.Module):
     def __init__(self, n_classes=2, n_bands=5):
         super().__init__()
         self.embedding_net = EEGBandEmbeddingNet(n_channels=18, n_bands=n_bands, n_output_features=16).cuda()
-        input_dim = self.embedding_net.extractors[0].channel_conv.out_channels * len(self.embedding_net.extractors)
         self.classifier = nn.Sequential(
-            nn.Linear(input_dim, 64),
+            nn.Linear(32, 32),
             nn.ReLU(),
-            nn.Dropout(p=0.2),
-            nn.BatchNorm1d(64),
-            nn.Linear(64, n_classes)
+            nn.Dropout(p=0.1),
+            nn.BatchNorm1d(32),
+            nn.Linear(32, n_classes)
         )
 
     def forward(self, x):
