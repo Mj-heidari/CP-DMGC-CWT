@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
-from sklearn.metrics import roc_auc_score, accuracy_score, classification_report
+from sklearn.metrics import roc_auc_score, accuracy_score
 from tqdm import tqdm
 from dataset.dataset import CHBMITDataset, MilDataloader, make_cv_splitter
 import torch.nn.functional as F
@@ -16,21 +16,14 @@ import json
 import logging
 from datetime import datetime
 import pickle
-import visualizer
 
 warnings.filterwarnings("ignore")
 
-def mil_confident_loss(instance_logits, bag_label, T=5, pos_gain=2.0):
-    if bag_label.item() == 1:
-        weights = torch.softmax(instance_logits[:, 1] / T, dim=0).unsqueeze(-1)  
-        bag_logit = (weights * instance_logits).sum(dim=0, keepdim=True)
-        bag_loss = F.cross_entropy(bag_logit, bag_label.unsqueeze(0))
-        total_loss = pos_gain * bag_loss 
-    else:
-        # Negative bag: per-instance CE (supervised)
-        bag_loss = F.cross_entropy(instance_logits, bag_label.repeat(instance_logits.size(0)))
-        total_loss = bag_loss.mean()
-
+def mil_confident_loss(instance_logits, bag_label, T=10):
+    weights = torch.softmax(instance_logits[:, 1] / T, dim=0).unsqueeze(-1)  
+    bag_logit = (weights * instance_logits).sum(dim=0, keepdim=True)
+    bag_loss = F.cross_entropy(bag_logit, bag_label.unsqueeze(0))
+    total_loss = bag_loss 
     return total_loss
 
 
@@ -156,8 +149,7 @@ class Trainer:
             auc = roc_auc_score(all_labels, all_probs)
         except ValueError:
             auc = float("nan")
-        report = classification_report(all_labels, all_preds, digits=4)
-        return avg_loss, acc, auc, report, np.array(all_probs), np.array(all_preds), np.array(all_labels)
+        return avg_loss, acc, auc, np.array(all_probs), np.array(all_preds), np.array(all_labels)
 
     def save_checkpoint(self, epoch, metric, outer_fold, inner_fold):
         """Save model checkpoint if it's the best so far"""
@@ -177,22 +169,6 @@ class Trainer:
         if self.best_model_path and os.path.exists(self.best_model_path):
             self.model.load_state_dict(torch.load(self.best_model_path, map_location=self.device))
             logging.info(f"Loaded best model from {self.best_model_path}")
-
-
-def moving_average_predictions(probs, window_size=3):
-    """Apply moving average to predictions"""
-    if len(probs) < window_size:
-        return probs
-    
-    smoothed_probs = np.copy(probs).astype(float)
-    
-    # For the first samples, use available data
-    for i in range(len(probs)):
-        start_idx = max(0, i - window_size + 1)
-        end_idx = i + 1
-        smoothed_probs[i] = np.mean(probs[start_idx:end_idx])
-    
-    return smoothed_probs
 
 
 def setup_run_directory():
@@ -261,18 +237,14 @@ def run_nested_cv(
     outer_cv_params=None,
     inner_cv_params=None,
     run_dir=None,
-    moving_avg_window=3,
 ):
     """
     Perform nested cross-validation with improvements:
     - Uses best model instead of last epoch
     - Saves model checkpoints
-    - Applies moving average to predictions
     - Undersamples interictal data
     """
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    all_results = []
-    detailed_results = []
 
     # Default configs
     if outer_cv_params is None:
@@ -282,31 +254,33 @@ def run_nested_cv(
 
     logging.info(f"Starting nested CV with {len(list(make_cv_splitter(dataset, **outer_cv_params)))} outer folds")
 
-    vis = visualizer.Visualizer(run_dir=run_dir, metric_for_best="else", only_curves=True, only_best=True)
-    vis2 = visualizer.Visualizer(run_dir=run_dir, metric_for_best="else", only_best=True)
+    # Store all results for later analysis
+    cv_results = {
+        'outer_folds': []
+    }
+
     # Outer CV
     for fold, (train_val_dataset, test_dataset) in enumerate(make_cv_splitter(dataset, **outer_cv_params)):
         logging.info(f"\n===== Outer Fold {fold+1} =====")
 
-        test_probs_ensemble = []
         y_test = dataset.y[test_dataset.indices]
         
-        fold_results = {
+        fold_data = {
             'outer_fold': fold + 1,
-            'inner_fold_results': [],
             'test_indices': test_dataset.indices,
+            'y_test': y_test.tolist(),
+            'inner_folds': []
         }
 
         # Inner CV
         inner_splits = list(make_cv_splitter(train_val_dataset, **inner_cv_params))
         logging.info(f"Inner CV: {len(inner_splits)} folds")
-        vis2.reset()
         for inner_fold, (train_dataset, val_dataset) in enumerate(inner_splits):
             logging.info(f"  Inner Fold {inner_fold+1}")
 
             # Create undersampled train loader
             train_loader = MilDataloader(train_dataset, batch_size=batch_size, shuffle=True, bag_size=4)
-            val_loader = DataLoader(val_dataset, batch_size=256, shuffle=False)
+            val_loader = DataLoader(val_dataset, batch_size=128, shuffle=False)
             test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
             # Model & trainer
@@ -317,13 +291,13 @@ def run_nested_cv(
             scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.5)
 
             # Training loop
-            inner_fold_log = []
-            vis.reset()
+            training_log = []
+
             for epoch in range(1, epochs + 1):
                 trainer.use_mil = True
                 tr_loss, tr_acc = trainer.train_one_epoch(train_loader, optimizer)
                 trainer.use_mil = False
-                val_loss, val_acc, val_auc, _, vprobs, vpreds, vlabels = trainer.evaluate(val_loader)
+                val_loss, val_acc, val_auc, vprobs, vpreds, vlabels = trainer.evaluate(val_loader)
                 
                 # Compute Wasserstein distance between positive and negative probabilities
                 pos_probs = vprobs[vlabels == 1]
@@ -333,9 +307,6 @@ def run_nested_cv(
                 # Use Wasserstein distance as selection metric
                 metric = val_wdist
                 trainer.save_checkpoint(epoch, metric, fold+1, inner_fold+1)
-
-                vis.update(epoch, tr_loss, tr_acc, val_wdist, val_acc, vprobs, vpreds, vlabels)
-                vis.render(fold, inner_fold, vprobs, vpreds, vlabels)
                 
                 scheduler.step()
                 
@@ -347,145 +318,47 @@ def run_nested_cv(
                     'val_acc': val_acc,
                     'val_auc': val_auc
                 }
-                inner_fold_log.append(epoch_info)
+                training_log.append(epoch_info)
                 
                 logging.info(f"Epoch {epoch:02d} | "
                           f"Train {tr_loss:.4f}/{tr_acc:.4f} | "
                           f"Val {val_loss:.4f}/{val_acc:.4f}/{val_auc:.4f}")
-                
-                # if (epoch + 1) % 5 == 0:
-                #     train_loader.bag_size = min(train_loader.bag_size+1 ,4)
-                #     val_loader.bag_size = min(val_loader.bag_size+1, 4)  
-                #     print("bag size increased, new bag size: ",train_loader.bag_size)              
+                                
 
             # Load best model for test prediction
             trainer.load_best_model()
             
-            # Predict test set for 
-            trainer.use_mil = False
-            test_loss, test_acc, test_auc, _, test_probs, tpreds, tlabels = trainer.evaluate(test_loader)
-            vis2.update(inner_fold, 0, 0, test_loss, test_acc, test_probs, tpreds, tlabels)
-            vis2.render(fold, "test", test_probs, tpreds, tlabels)
-
-            test_probs_ensemble.append(test_probs)
+            # Get FINAL validation predictions from best model (for calibration)
+            val_loss, val_acc, val_auc, val_probs, val_preds, val_labels = trainer.evaluate(val_loader)
             
-            fold_results['inner_fold_results'].append({
+            # Get test predictions
+            test_loss, test_acc, test_auc, test_probs, test_preds, test_labels = trainer.evaluate(test_loader)
+            
+            # Store inner fold results
+            inner_fold_data = {
                 'inner_fold': inner_fold + 1,
                 'best_val_auc': trainer.best_val_auc,
-                'epoch_logs': inner_fold_log,
-                'model_path': trainer.best_model_path
-            })
-
-        val_aucs = np.array([r['best_val_auc'] for r in fold_results['inner_fold_results']])
-        test_probs_stack = np.stack(test_probs_ensemble)
-
-        _ = visualizer.compute_prediction_correlation(
-            test_probs_stack,
-            tlabels,
-            save_path=f"{run_dir}/folds/fold_{fold+1}_preictal_corr.png",
-        )
-
-        # Normalize or softmax weights
-        weights = val_aucs / val_aucs.sum()
-
-        # Weighted ensemble
-        final_probs = np.tensordot(weights, test_probs_stack, axes=1)
-
-        
-        # Apply moving average
-        final_probs_ma = moving_average_predictions(final_probs, moving_avg_window)
-        
-        # Predictions
-        final_preds = (final_probs >= 0.5).astype(int)
-        final_preds_ma = (final_probs_ma >= 0.5).astype(int)
-
-        # === Metrics on outer test ===
-        auc = roc_auc_score(y_test, final_probs)
-        auc_ma = roc_auc_score(y_test, final_probs_ma)
-
-        # Classification reports
-        report = classification_report(y_test, final_preds, digits=4)
-        report_ma = classification_report(y_test, final_preds_ma, digits=4)
-
-        # Sensitivity: at least one preictal detected
-        has_preictal = np.any(y_test == 1)
-        if has_preictal:
-            detected = np.any((y_test == 1) & (final_preds == 1))
-            detected_ma = np.any((y_test == 1) & (final_preds_ma == 1))
-            sensitivity = 1 if detected else 0
-            sensitivity_ma = 1 if detected_ma else 0
-        else:
-            sensitivity = np.nan
-            sensitivity_ma = np.nan
-
-        # FPR/h
-        false_positives = np.sum((y_test == 0) & (final_preds == 1))
-        false_positives_ma = np.sum((y_test == 0) & (final_preds_ma == 1))
-        hours = (len(y_test) * 5) / 3600.0
-        fpr_per_hour = false_positives / hours if hours > 0 else np.nan
-        fpr_per_hour_ma = false_positives_ma / hours if hours > 0 else np.nan
-
-        logging.info(f"\n==> Outer Fold {fold+1}")
-        logging.info(f"Raw: AUC={auc:.4f}, Sensitivity={sensitivity}, FPR/h={fpr_per_hour:.4f}")
-        logging.info(f"MA:  AUC={auc_ma:.4f}, Sensitivity={sensitivity_ma}, FPR/h={fpr_per_hour_ma:.4f}")
-        logging.info(f"Raw Classification Report:\n{report}")
-        logging.info(f"MA Classification Report:\n{report_ma}")
-
-        fold_result = {
-            "fold": fold + 1,
-            "raw": {
-                "auc": auc,
-                "sensitivity": sensitivity,
-                "fpr_per_hour": fpr_per_hour,
-                "report": report
-            },
-            "moving_average": {
-                "auc": auc_ma,
-                "sensitivity": sensitivity_ma,
-                "fpr_per_hour": fpr_per_hour_ma,
-                "report": report_ma
-            },
-            "predictions": {
-                "final_probs": final_probs.tolist(),
-                "final_probs_ma": final_probs_ma.tolist(),
-                "y_test": y_test.tolist()
+                'model_path': trainer.best_model_path,
+                'training_log': training_log,
+                'val_indices': val_dataset.indices,
+                'val_probs': val_probs.tolist(),
+                'val_labels': val_labels.tolist(),
+                'test_probs': test_probs.tolist(),
+                'test_labels': test_labels.tolist(),
             }
-        }
-        all_results.append(fold_result)
-        detailed_results.append(fold_results)
-
-    # Save detailed results
-    if run_dir:
-        results_path = os.path.join(run_dir, 'detailed_results.pkl')
-        with open(results_path, 'wb') as f:
-            pickle.dump(detailed_results, f)
+            
+            fold_data['inner_folds'].append(inner_fold_data)
         
-        results_json_path = os.path.join(run_dir, 'results.json')
-        with open(results_json_path, 'w') as f:
-            json.dump(all_results, f, indent=2)
+        cv_results['outer_folds'].append(fold_data)
 
-    # Summary statistics
-    raw_aucs = [r["raw"]["auc"] for r in all_results]
-    ma_aucs = [r["moving_average"]["auc"] for r in all_results]
-    
-    raw_sens = [r["raw"]["sensitivity"] for r in all_results if not np.isnan(r["raw"]["sensitivity"])]
-    ma_sens = [r["moving_average"]["sensitivity"] for r in all_results if not np.isnan(r["moving_average"]["sensitivity"])]
-    
-    raw_fprs = [r["raw"]["fpr_per_hour"] for r in all_results]
-    ma_fprs = [r["moving_average"]["fpr_per_hour"] for r in all_results]
-
-    logging.info("\n==== Final Results ====")
-    logging.info("Raw Results:")
-    logging.info(f"  Mean AUC={np.mean(raw_aucs):.4f} ± {np.std(raw_aucs):.4f}")
-    logging.info(f"  Mean Sensitivity={np.mean(raw_sens):.4f} ± {np.std(raw_sens):.4f}")
-    logging.info(f"  Mean FPR/h={np.mean(raw_fprs):.4f} ± {np.std(raw_fprs):.4f}")
-    
-    logging.info("Moving Average Results:")
-    logging.info(f"  Mean AUC={np.mean(ma_aucs):.4f} ± {np.std(ma_aucs):.4f}")
-    logging.info(f"  Mean Sensitivity={np.mean(ma_sens):.4f} ± {np.std(ma_sens):.4f}")
-    logging.info(f"  Mean FPR/h={np.mean(ma_fprs):.4f} ± {np.std(ma_fprs):.4f}")
-
-    return all_results
+    # Save raw results
+    if run_dir:
+        results_path = os.path.join(run_dir, 'raw_predictions.pkl')
+        with open(results_path, 'wb') as f:
+            pickle.dump(cv_results, f)
+        logging.info(f"Saved raw predictions to {results_path}")
+   
+    return cv_results
 
 
 def parse_arguments():
@@ -533,8 +406,7 @@ def parse_arguments():
     # Other parameters
     parser.add_argument('--random_state', type=int, default=42,
                        help='Random state for reproducibility')
-    parser.add_argument('--moving_avg_window', type=int, default=3,
-                       help='Moving average window size')
+
     
     # Config 
     parser.add_argument('--config', type=str, default="",
@@ -575,10 +447,27 @@ if __name__ == "__main__":
     else:
         online_transforms = []
 
+    
+    offline_transforms = []
+    if args.model == 'EEGBandClassifier':
+        from transforms.signal.filterbank import FilterBank
+        filter_bank = FilterBank(
+            band_dict={
+                "delta": (0.5, 4),
+                "theta": (4, 8),
+                "alpha": (8, 14),
+                "beta": (14, 30),
+                "gamma": (30, 48),
+            },
+            sampling_rate=128,
+            normalize_by_lowbands=False,
+        )
+        offline_transforms = [filter_bank]
+
     dataset = CHBMITDataset(
         args.dataset_dir,
         use_uint16=args.use_uint16,
-        offline_transforms=[],
+        offline_transforms=offline_transforms,
         online_transforms=online_transforms,
         suffix=args.suffix,
         subject_id=args.subject_id
@@ -624,7 +513,6 @@ if __name__ == "__main__":
         outer_cv_params=outer_cv_params,
         inner_cv_params=inner_cv_params,
         run_dir=run_dir,
-        moving_avg_window=args.moving_avg_window
     )
     
     logging.info(f"Run completed. Results saved in {run_dir}")
