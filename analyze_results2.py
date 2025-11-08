@@ -299,6 +299,33 @@ class MetricsCalculator:
         hours = (len(y_true) * 5) / 3600.0  # 5 seconds per sample
         metrics['fpr_per_hour'] = false_positives / hours if hours > 0 else np.nan
         
+        # --- Suppressed prediction version (for FPR_2) ---
+        suppression_len = 12 * 5  # 60 samples (5 minutes)
+        y_pred_suppressed = y_pred.copy()
+
+        # Process each contiguous region of identical y_true values separately
+        regions = []
+        start = 0
+        for i in range(1, len(y_true)):
+            if y_true[i] != y_true[i - 1]:
+                regions.append((start, i))
+                start = i
+        regions.append((start, len(y_true)))  # last region
+
+        for start, end in regions:
+            preds = y_pred_suppressed[start:end]
+            i = 0
+            while i < len(preds):
+                if preds[i] == 1:
+                    preds[i + 1 : i + 1 + suppression_len] = 0
+                    i += suppression_len  # jump ahead to skip suppressed region
+                i += 1
+            y_pred_suppressed[start:end] = preds
+
+        # --- Compute suppressed FPR per hour ---
+        false_positives_supp = np.sum((y_true == 0) & (y_pred_suppressed == 1))
+        metrics['fpr_sup'] = false_positives_supp / hours if hours > 0 else np.nan
+
         # Time to first detection (in samples)
         if has_preictal:
             first_preictal_idx = np.where(y_true == 1)[0][0]
@@ -1183,7 +1210,7 @@ def analyze_run(run_dir: str,
     print("Top 10 Sensitivity and FPR:")
     print("="*80)
     top_sen_fpr = summary_df.sort_values(['mean_sensitivity', 'mean_fpr_per_hour'], ascending=[False, True])[
-        ['variant', 'mean_auc', 'std_auc', 'mean_sensitivity', 'mean_fpr_per_hour']
+        ['variant', 'mean_auc', 'std_auc', 'mean_sensitivity', 'mean_fpr_per_hour', 'mean_fpr_sup']
     ]
     print(top_sen_fpr[0:10].to_string(index=False))
     
