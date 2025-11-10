@@ -14,6 +14,7 @@ from models.TSLANet import TSLANet
 from models.LMDA import LMDA
 from models.MB_dMGC_CWTFFNet import MB_dMGC_CWTFFNet
 from models.EEGBandClassifier import EEGBandClassifier
+from models.EEGWaveNet import EEGWaveNet
 from models.EEG_GNN_SSL import DCRNNModel_classification, get_adjacency_matrix
 import torch.nn as nn
 import torch
@@ -303,6 +304,11 @@ def get_builder(model: str = "CE-stSENet"):
             builder = model_builder(
                 EEGBandClassifier,
                 n_bands = 5,
+            )
+            return builder
+        case "EEGWaveNet":
+            builder = model_builder(
+                EEGWaveNet
             )
             return builder
         case _:

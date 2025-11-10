@@ -384,11 +384,22 @@ if __name__ == "__main__":
         from transforms.signal.filterbank import FilterBank
         filter_bank = FilterBank(
             band_dict={
+                "delta": (0.5, 4),
+                "theta": (4, 8),
                 "alpha": (8, 14),
                 "beta": (14, 30),
                 "gamma": (30, 48),
             },
             sampling_rate=128,
+            normalize_by_lowbands=True,
+        )
+        offline_transforms = [filter_bank]
+        
+    if args.model == 'EEGWaveNet':
+        from transforms.signal.wavletfilterbank import WaveletFilterBank
+        filter_bank = WaveletFilterBank(
+            fs=128,
+            combine_mode="concat_time",
         )
         offline_transforms = [filter_bank]
 
