@@ -1,5 +1,5 @@
 """
-Comprehensive Analysis Script for Seizure Prediction Results
+Comprehensive Analysis Script for Seizure Prediction Results (IMPROVED VERSION)
 
 This script performs all post-processing, metrics computation, and visualization
 on raw predictions from train.py. It supports:
@@ -8,6 +8,18 @@ on raw predictions from train.py. It supports:
 - Multiple thresholds
 - Ensemble strategies
 - Comprehensive metrics and visualizations
+
+IMPROVEMENTS:
+- Fixed moving average bug: smoothing within contiguous label regions (preserves time order)
+- FPR/hour now computed over interictal time only (standard definition)
+- Added more metrics: balanced accuracy, MCC, specificity, Brier score, ECE, log loss
+- Best-variants CSVs now include all relevant mean/std metrics
+- Top-N for best tables and console prints is configurable via --top_n (supports "all")
+- Fixed threshold sensitivity analysis: re-thresholds same calibrated/MA probabilities
+- Removed duplicate Pareto frontier function
+- Probability distribution plots show the exact configured threshold
+- Configurable sampling period and suppression duration via CLI
+- Enhanced robustness: handles edge cases properly
 """
 
 import json
@@ -20,10 +32,11 @@ from pathlib import Path
 import argparse
 from sklearn.metrics import (
     roc_curve, auc, roc_auc_score, precision_recall_curve, 
-    average_precision_score, confusion_matrix, classification_report, f1_score
+    average_precision_score, confusion_matrix, classification_report, f1_score,
+    balanced_accuracy_score, matthews_corrcoef, brier_score_loss, log_loss
 )
 from scipy import stats
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional, Union
 import warnings
 import os
 from probability_calibration import calibrate_ensemble
@@ -59,14 +72,25 @@ class TrainingVisualizer:
         self.best_epoch_data = None
 
     def _compute_tpr_fpr(self, y_true, y_pred):
-        tn, fp, fn, tp = confusion_matrix(y_true, y_pred, labels=[0, 1]).ravel()
-        tpr = tp / (tp + fn + 1e-10)
-        fpr = fp / (fp + tn + 1e-10)
+        try:
+            tn, fp, fn, tp = confusion_matrix(y_true, y_pred, labels=[0, 1]).ravel()
+            tpr = tp / (tp + fn + 1e-10)
+            fpr = fp / (fp + tn + 1e-10)
+        except:
+            tpr, fpr = 0.0, 0.0
         return tpr, fpr
 
     def update(self, epoch, tr_loss, tr_acc, val_loss, val_acc, vprobs, vpreds, vlabels):
-        val_auc = roc_auc_score(vlabels, vprobs)
-        val_f1 = f1_score(vlabels, vpreds)
+        try:
+            val_auc = roc_auc_score(vlabels, vprobs)
+        except:
+            val_auc = 0.5
+        
+        try:
+            val_f1 = f1_score(vlabels, vpreds)
+        except:
+            val_f1 = 0.0
+        
         tpr, fpr = self._compute_tpr_fpr(vlabels, vpreds)
 
         self.history["epoch"].append(epoch)
@@ -119,23 +143,26 @@ class TrainingVisualizer:
     def _plot_probs_and_hist(self, vprobs, vpreds, vlabels, out_dir, tag):
         # -- Probability series for label=1 samples
         idx_pos = np.where(vlabels == 1)[0]
-        probs_pos = vprobs[idx_pos]
-        fig, ax = plt.subplots(figsize=(8, 4))
-        ax.plot(probs_pos, color="blue")
-        ax.set_title(f"Predicted Probabilities for Label=1 ({tag})")
-        ax.set_xlabel("Sample index (label=1 subset)")
-        ax.set_ylabel("Predicted Probability")
-        fig.tight_layout()
-        fig.savefig(os.path.join(out_dir, f"probs_{tag}.png"))
-        plt.close(fig)
+        if len(idx_pos) > 0:
+            probs_pos = vprobs[idx_pos]
+            fig, ax = plt.subplots(figsize=(8, 4))
+            ax.plot(probs_pos, color="blue")
+            ax.set_title(f"Predicted Probabilities for Label=1 ({tag})")
+            ax.set_xlabel("Sample index (label=1 subset)")
+            ax.set_ylabel("Predicted Probability")
+            fig.tight_layout()
+            fig.savefig(os.path.join(out_dir, f"probs_{tag}.png"))
+            plt.close(fig)
 
         # -- Histogram for both classes
         fig, ax = plt.subplots(figsize=(6, 4))
-        ax.hist(vprobs[vlabels == 0], bins=20, alpha=0.6, label="Label=0", density=True)
-        ax.hist(vprobs[vlabels == 1], bins=20, alpha=0.6, label="Label=1", density=True)
+        if np.any(vlabels == 0):
+            ax.hist(vprobs[vlabels == 0], bins=20, alpha=0.6, label="Label=0", density=True)
+        if np.any(vlabels == 1):
+            ax.hist(vprobs[vlabels == 1], bins=20, alpha=0.6, label="Label=1", density=True)
         ax.set_title(f"Predicted Probability Distribution ({tag})")
         ax.set_xlabel("Predicted Probability")
-        ax.set_ylabel("Count")
+        ax.set_ylabel("Density")
         ax.legend()
         fig.tight_layout()
         fig.savefig(os.path.join(out_dir, f"hist_{tag}.png"))
@@ -158,7 +185,7 @@ def compute_prediction_correlation(test_probs_stack, tlabels, save_path=None, sh
     """
     mask = (tlabels == 1)
     if not np.any(mask):
-        print("⚠️ No label=1 samples found in test set — correlation skipped.")
+        print("⚠️  No label=1 samples found in test set — correlation skipped.")
         return None
 
     probs_preictal = test_probs_stack[:, mask]
@@ -214,34 +241,59 @@ def compute_prediction_correlation(test_probs_stack, tlabels, save_path=None, sh
 # CORE PROCESSING FUNCTIONS
 # ============================================================================
 
-def moving_average(probs: np.ndarray, y, window_size: int = 3) -> np.ndarray:
-    """Apply moving average smoothing to predictions"""
+def moving_average(probs: np.ndarray, y: np.ndarray, window_size: int = 3) -> np.ndarray:
+    """
+    Apply moving average smoothing within contiguous regions of equal labels.
+    This FIXES the previous bug that broke time order by separating classes.
+    
+    Args:
+        probs: Predicted probabilities in time order
+        y: True labels in time order
+        window_size: Window size for moving average
+    
+    Returns:
+        Smoothed probabilities in original time order
+    """
     if len(probs) < window_size or window_size == 1:
-        return probs
+        return probs.copy()
     
     y = np.array(y)
-    pre_mask = y == 1
-    inter_mask = ~pre_mask
+    smoothed_probs = probs.copy().astype(float)
     
-    smoothed_probs = np.zeros_like(probs).astype(float)
-
-    def moving_avg(target_probs, win_size):
-        temp = np.zeros_like(target_probs)
-        for i in range(win_size, len(target_probs)):
-            start_idx = max(0, i - win_size + 1)
-            end_idx = i + 1
-            temp[i] = np.mean(target_probs[start_idx:end_idx])
-        return temp
+    # Find contiguous regions of identical labels
+    regions = []
+    start = 0
+    for i in range(1, len(y)):
+        if y[i] != y[i - 1]:
+            regions.append((start, i))
+            start = i
+    regions.append((start, len(y)))  # Last region
     
-    if len(probs[pre_mask]):
-        smoothed_probs[:len(probs[pre_mask])] = moving_avg(probs[pre_mask],window_size)
-    if len(probs[inter_mask]):
-        smoothed_probs[len(probs[pre_mask]):] = moving_avg(probs[inter_mask],window_size)
+    # Apply moving average within each region (no leakage across boundaries)
+    for start, end in regions:
+        region_len = end - start
+        if region_len >= window_size:
+            for i in range(start, end):
+                win_start = max(start, i - window_size + 1)
+                win_end = i + 1
+                smoothed_probs[i] = np.mean(probs[win_start:win_end])
+        else:
+            # For regions smaller than window, just use available samples
+            for i in range(start, end):
+                win_start = start
+                win_end = i + 1
+                smoothed_probs[i] = np.mean(probs[win_start:win_end])
     
     return smoothed_probs
 
+
 def weighted_ensemble(probs_stack: np.ndarray, weights: np.ndarray) -> np.ndarray:
-    """Combine predictions using weighted average"""
+    """Combine predictions using weighted average with robustness checks"""
+    if np.sum(weights) == 0:
+        # Fallback to uniform weights if all weights are zero
+        weights = np.ones_like(weights) / len(weights)
+    else:
+        weights = weights / np.sum(weights)  # Normalize
     return np.tensordot(weights, probs_stack, axes=1)
 
 
@@ -254,12 +306,38 @@ def apply_threshold(probs: np.ndarray, threshold: float = 0.5) -> np.ndarray:
 # METRICS COMPUTATION
 # ============================================================================
 
+def compute_ece(y_true: np.ndarray, y_probs: np.ndarray, n_bins: int = 10) -> float:
+    """
+    Compute Expected Calibration Error (ECE)
+    
+    Args:
+        y_true: True binary labels
+        y_probs: Predicted probabilities
+        n_bins: Number of bins for calibration
+    
+    Returns:
+        ECE value
+    """
+    bin_boundaries = np.linspace(0, 1, n_bins + 1)
+    ece = 0.0
+    
+    for i in range(n_bins):
+        bin_mask = (y_probs > bin_boundaries[i]) & (y_probs <= bin_boundaries[i + 1])
+        if np.sum(bin_mask) > 0:
+            bin_acc = np.mean(y_true[bin_mask])
+            bin_conf = np.mean(y_probs[bin_mask])
+            bin_weight = np.sum(bin_mask) / len(y_true)
+            ece += bin_weight * np.abs(bin_acc - bin_conf)
+    
+    return ece
+
+
 class MetricsCalculator:
     """Calculate comprehensive metrics for predictions"""
     
     @staticmethod
     def compute_basic_metrics(y_true: np.ndarray, y_pred: np.ndarray, y_probs: np.ndarray) -> Dict:
-        """Compute basic classification metrics"""
+        """Compute basic classification metrics including new advanced metrics"""
         from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
         
         metrics = {
@@ -269,21 +347,66 @@ class MetricsCalculator:
             'f1': f1_score(y_true, y_pred, zero_division=0),
         }
         
+        # AUC
         try:
             metrics['auc'] = roc_auc_score(y_true, y_probs)
         except:
             metrics['auc'] = np.nan
         
+        # Average Precision
         try:
             metrics['ap'] = average_precision_score(y_true, y_probs)
         except:
             metrics['ap'] = np.nan
         
+        # Balanced Accuracy
+        try:
+            metrics['balanced_accuracy'] = balanced_accuracy_score(y_true, y_pred)
+        except:
+            metrics['balanced_accuracy'] = np.nan
+        
+        # Matthews Correlation Coefficient
+        try:
+            metrics['mcc'] = matthews_corrcoef(y_true, y_pred)
+        except:
+            metrics['mcc'] = np.nan
+        
+        # Brier Score
+        try:
+            metrics['brier_score'] = brier_score_loss(y_true, y_probs)
+        except:
+            metrics['brier_score'] = np.nan
+        
+        # Log Loss
+        try:
+            metrics['log_loss'] = log_loss(y_true, y_probs)
+        except:
+            metrics['log_loss'] = np.nan
+        
+        # Expected Calibration Error
+        try:
+            metrics['ece'] = compute_ece(y_true, y_probs)
+        except:
+            metrics['ece'] = np.nan
+        
         return metrics
     
     @staticmethod
-    def compute_seizure_specific_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> Dict:
-        """Compute seizure-specific metrics"""
+    def compute_seizure_specific_metrics(
+        y_true: np.ndarray, 
+        y_pred: np.ndarray,
+        sampling_period: float = 5.0,
+        suppression_duration: int = 60
+    ) -> Dict:
+        """
+        Compute seizure-specific metrics
+        
+        Args:
+            y_true: True labels
+            y_pred: Predicted labels
+            sampling_period: Time per sample in seconds (default: 5.0)
+            suppression_duration: Suppression window in samples (default: 60 = 5 minutes at 5s/sample)
+        """
         metrics = {}
         
         # Sensitivity: at least one preictal detected
@@ -294,13 +417,14 @@ class MetricsCalculator:
         else:
             metrics['sensitivity'] = np.nan
         
-        # FPR per hour
-        false_positives = np.sum((y_true == 0) & (y_pred == 1))
-        hours = (len(y_true) * 5) / 3600.0  # 5 seconds per sample
-        metrics['fpr_per_hour'] = false_positives / hours if hours > 0 else np.nan
+        # FPR per hour - FIXED: computed over INTERICTAL time only (standard definition)
+        interictal_mask = (y_true == 0)
+        false_positives = np.sum(interictal_mask & (y_pred == 1))
+        interictal_samples = np.sum(interictal_mask)
+        interictal_hours = (interictal_samples * sampling_period) / 3600.0
+        metrics['fpr_per_hour'] = false_positives / interictal_hours if interictal_hours > 0 else np.nan
         
-        # --- Suppressed prediction version (for FPR_2) ---
-        suppression_len = 12 * 5  # 60 samples (5 minutes)
+        # --- Suppressed prediction version (for FPR_sup) ---
         y_pred_suppressed = y_pred.copy()
 
         # Process each contiguous region of identical y_true values separately
@@ -317,42 +441,60 @@ class MetricsCalculator:
             i = 0
             while i < len(preds):
                 if preds[i] == 1:
-                    preds[i + 1 : i + 1 + suppression_len] = 0
-                    i += suppression_len  # jump ahead to skip suppressed region
-                i += 1
+                    # Suppress subsequent predictions within suppression window
+                    supp_end = min(i + 1 + suppression_duration, len(preds))
+                    preds[i + 1:supp_end] = 0
+                    i = supp_end  # Jump ahead
+                else:
+                    i += 1
             y_pred_suppressed[start:end] = preds
 
         # --- Compute suppressed FPR per hour ---
         false_positives_supp = np.sum((y_true == 0) & (y_pred_suppressed == 1))
-        metrics['fpr_sup'] = false_positives_supp / hours if hours > 0 else np.nan
+        metrics['fpr_sup'] = false_positives_supp / interictal_hours if interictal_hours > 0 else np.nan
 
-        # Time to first detection (in samples)
+        # Time to first detection (in seconds)
         if has_preictal:
             first_preictal_idx = np.where(y_true == 1)[0][0]
             detection_mask = (y_true == 1) & (y_pred == 1)
             if np.any(detection_mask):
                 first_detection_idx = np.where(detection_mask)[0][0]
-                metrics['time_to_detection'] = (first_detection_idx - first_preictal_idx) * 5  # seconds
+                metrics['time_to_detection'] = (first_detection_idx - first_preictal_idx) * sampling_period
             else:
                 metrics['time_to_detection'] = np.nan
         else:
             metrics['time_to_detection'] = np.nan
         
-        # Confusion matrix
-        tn, fp, fn, tp = confusion_matrix(y_true, y_pred).ravel()
-        metrics['true_negative'] = int(tn)
-        metrics['false_positive'] = int(fp)
-        metrics['false_negative'] = int(fn)
-        metrics['true_positive'] = int(tp)
-        metrics['specificity'] = tn / (tn + fp) if (tn + fp) > 0 else np.nan
+        # Confusion matrix elements
+        try:
+            tn, fp, fn, tp = confusion_matrix(y_true, y_pred).ravel()
+            metrics['true_negative'] = int(tn)
+            metrics['false_positive'] = int(fp)
+            metrics['false_negative'] = int(fn)
+            metrics['true_positive'] = int(tp)
+            metrics['specificity'] = tn / (tn + fp) if (tn + fp) > 0 else np.nan
+        except:
+            metrics['true_negative'] = 0
+            metrics['false_positive'] = 0
+            metrics['false_negative'] = 0
+            metrics['true_positive'] = 0
+            metrics['specificity'] = np.nan
         
         return metrics
     
     @staticmethod
-    def compute_all_metrics(y_true: np.ndarray, y_pred: np.ndarray, y_probs: np.ndarray) -> Dict:
+    def compute_all_metrics(
+        y_true: np.ndarray, 
+        y_pred: np.ndarray, 
+        y_probs: np.ndarray,
+        sampling_period: float = 5.0,
+        suppression_duration: int = 60
+    ) -> Dict:
         """Compute all available metrics"""
         basic = MetricsCalculator.compute_basic_metrics(y_true, y_pred, y_probs)
-        seizure = MetricsCalculator.compute_seizure_specific_metrics(y_true, y_pred)
+        seizure = MetricsCalculator.compute_seizure_specific_metrics(
+            y_true, y_pred, sampling_period, suppression_duration
+        )
         return {**basic, **seizure}
 
 
@@ -363,10 +505,12 @@ class MetricsCalculator:
 class ResultsProcessor:
     """Process raw predictions and generate all variants"""
     
-    def __init__(self, raw_results: Dict, run_dir: Path):
+    def __init__(self, raw_results: Dict, run_dir: Path, sampling_period: float = 5.0, suppression_duration: int = 60):
         self.raw_results = raw_results
         self.run_dir = run_dir
         self.processed_results = []
+        self.sampling_period = sampling_period
+        self.suppression_duration = suppression_duration
     
     def process_all_variants(
         self,
@@ -376,6 +520,8 @@ class ResultsProcessor:
         percentiles: List[int] = [5, 10, 15, 20]
     ):
         """Process all combinations of variants"""
+        
+        print(f"  Processing variants with sampling_period={self.sampling_period}s, suppression={self.suppression_duration} samples")
         
         for outer_fold in self.raw_results['outer_folds']:
             fold_results = self._process_outer_fold(
@@ -416,7 +562,12 @@ class ResultsProcessor:
         
         test_probs_stack = np.stack(test_probs_stack)
         val_aucs = np.array(val_aucs)
-        weights = val_aucs / val_aucs.sum()
+        
+        # Robust weight calculation
+        if np.sum(val_aucs) > 0:
+            weights = val_aucs / val_aucs.sum()
+        else:
+            weights = np.ones_like(val_aucs) / len(val_aucs)
         
         # Base ensemble (no calibration)
         base_probs = weighted_ensemble(test_probs_stack, weights)
@@ -424,7 +575,12 @@ class ResultsProcessor:
         fold_results = {
             'fold': fold_num,
             'y_test': y_test,
-            'variants': {}
+            'variants': {},
+            'base_probs': base_probs,  # Store for threshold sensitivity analysis
+            'test_probs_stack': test_probs_stack,
+            'val_probs_list': val_probs_list,
+            'val_labels_list': val_labels_list,
+            'val_aucs': val_aucs
         }
         
         # Process each calibration method
@@ -432,11 +588,16 @@ class ResultsProcessor:
             if cal_method == 'none':
                 # No calibration
                 for ma_window in ma_windows:
-                    probs = moving_average(base_probs, y_test, ma_window) if ma_window > 1 else base_probs
+                    probs = moving_average(base_probs, y_test, ma_window) if ma_window > 1 else base_probs.copy()
+                    
+                    # Store calibrated+MA probs for later threshold analysis
+                    fold_results[f'probs_none_ma{ma_window}'] = probs
                     
                     for threshold in thresholds:
                         preds = apply_threshold(probs, threshold)
-                        metrics = MetricsCalculator.compute_all_metrics(y_test, preds, probs)
+                        metrics = MetricsCalculator.compute_all_metrics(
+                            y_test, preds, probs, self.sampling_period, self.suppression_duration
+                        )
                         
                         variant_name = f"cal_{cal_method}_ma_{ma_window}_thr_{threshold:.2f}"
                         fold_results['variants'][variant_name] = {
@@ -453,21 +614,30 @@ class ResultsProcessor:
             elif cal_method == 'percentile':
                 # Percentile calibration with different percentiles
                 for percentile in percentiles:
-                    cal_probs, _ = calibrate_ensemble(
-                        test_probs_stack,
-                        val_probs_list,
-                        val_labels_list,
-                        val_aucs,
-                        calibration_method='percentile',
-                        target_percentile=percentile
-                    )
+                    try:
+                        cal_probs, _ = calibrate_ensemble(
+                            test_probs_stack,
+                            val_probs_list,
+                            val_labels_list,
+                            val_aucs,
+                            calibration_method='percentile',
+                            target_percentile=percentile
+                        )
+                    except Exception as e:
+                        print(f"    Warning: Percentile calibration failed for p={percentile}: {e}")
+                        continue
                     
                     for ma_window in ma_windows:
-                        probs = moving_average(cal_probs, y_test, ma_window) if ma_window > 1 else cal_probs
+                        probs = moving_average(cal_probs, y_test, ma_window) if ma_window > 1 else cal_probs.copy()
+                        
+                        # Store for threshold analysis
+                        fold_results[f'probs_percentile_p{percentile}_ma{ma_window}'] = probs
                         
                         for threshold in thresholds:
                             preds = apply_threshold(probs, threshold)
-                            metrics = MetricsCalculator.compute_all_metrics(y_test, preds, probs)
+                            metrics = MetricsCalculator.compute_all_metrics(
+                                y_test, preds, probs, self.sampling_period, self.suppression_duration
+                            )
                             
                             variant_name = f"cal_{cal_method}_p{percentile}_ma_{ma_window}_thr_{threshold:.2f}"
                             fold_results['variants'][variant_name] = {
@@ -484,20 +654,29 @@ class ResultsProcessor:
             
             else:
                 # Other calibration methods (beta, isotonic, temperature)
-                cal_probs, _ = calibrate_ensemble(
-                    test_probs_stack,
-                    val_probs_list,
-                    val_labels_list,
-                    val_aucs,
-                    calibration_method=cal_method
-                )
+                try:
+                    cal_probs, _ = calibrate_ensemble(
+                        test_probs_stack,
+                        val_probs_list,
+                        val_labels_list,
+                        val_aucs,
+                        calibration_method=cal_method
+                    )
+                except Exception as e:
+                    print(f"    Warning: {cal_method} calibration failed: {e}")
+                    continue
                 
                 for ma_window in ma_windows:
-                    probs = moving_average(cal_probs, y_test, ma_window) if ma_window > 1 else cal_probs
+                    probs = moving_average(cal_probs, y_test, ma_window) if ma_window > 1 else cal_probs.copy()
+                    
+                    # Store for threshold analysis
+                    fold_results[f'probs_{cal_method}_ma{ma_window}'] = probs
                     
                     for threshold in thresholds:
                         preds = apply_threshold(probs, threshold)
-                        metrics = MetricsCalculator.compute_all_metrics(y_test, preds, probs)
+                        metrics = MetricsCalculator.compute_all_metrics(
+                            y_test, preds, probs, self.sampling_period, self.suppression_duration
+                        )
                         
                         variant_name = f"cal_{cal_method}_ma_{ma_window}_thr_{threshold:.2f}"
                         fold_results['variants'][variant_name] = {
@@ -521,10 +700,11 @@ class ResultsProcessor:
 class Visualizer:
     """Generate all visualizations"""
     
-    def __init__(self, run_dir: Path):
+    def __init__(self, run_dir: Path, top_n: int = 20):
         self.run_dir = run_dir
         self.viz_dir = run_dir / 'visualizations'
         self.viz_dir.mkdir(exist_ok=True)
+        self.top_n = top_n
         
         # Set style
         sns.set_style("whitegrid")
@@ -534,6 +714,7 @@ class Visualizer:
         """Plot ROC curves for a specific variant across all folds"""
         plt.figure(figsize=(10, 8))
         
+        has_data = False
         for fold_result in processed_results:
             if variant_name not in fold_result['variants']:
                 continue
@@ -542,11 +723,19 @@ class Visualizer:
             y_test = fold_result['y_test']
             probs = variant['probs']
             
-            fpr, tpr, _ = roc_curve(y_test, probs)
-            roc_auc = auc(fpr, tpr)
-            
-            plt.plot(fpr, tpr, alpha=0.7, 
-                    label=f"Fold {fold_result['fold']} (AUC={roc_auc:.3f})")
+            try:
+                fpr, tpr, _ = roc_curve(y_test, probs)
+                roc_auc = auc(fpr, tpr)
+                
+                plt.plot(fpr, tpr, alpha=0.7, 
+                        label=f"Fold {fold_result['fold']} (AUC={roc_auc:.3f})")
+                has_data = True
+            except:
+                continue
+        
+        if not has_data:
+            plt.close()
+            return
         
         plt.plot([0, 1], [0, 1], 'k--', label='Random')
         plt.xlabel('False Positive Rate')
@@ -561,6 +750,7 @@ class Visualizer:
         """Plot precision-recall curves"""
         plt.figure(figsize=(10, 8))
         
+        has_data = False
         for fold_result in processed_results:
             if variant_name not in fold_result['variants']:
                 continue
@@ -569,11 +759,19 @@ class Visualizer:
             y_test = fold_result['y_test']
             probs = variant['probs']
             
-            precision, recall, _ = precision_recall_curve(y_test, probs)
-            ap = average_precision_score(y_test, probs)
-            
-            plt.plot(recall, precision, alpha=0.7,
-                    label=f"Fold {fold_result['fold']} (AP={ap:.3f})")
+            try:
+                precision, recall, _ = precision_recall_curve(y_test, probs)
+                ap = average_precision_score(y_test, probs)
+                
+                plt.plot(recall, precision, alpha=0.7,
+                        label=f"Fold {fold_result['fold']} (AP={ap:.3f})")
+                has_data = True
+            except:
+                continue
+        
+        if not has_data:
+            plt.close()
+            return
         
         plt.xlabel('Recall')
         plt.ylabel('Precision')
@@ -584,29 +782,41 @@ class Visualizer:
         plt.close()
     
     def plot_probability_distributions(self, processed_results: List[Dict], variant_name: str):
-        """Plot probability distributions for preictal vs interictal"""
-        n_folds = len(processed_results)
+        """Plot probability distributions for preictal vs interictal with CORRECT threshold line"""
+        n_folds = len([f for f in processed_results if variant_name in f['variants']])
+        if n_folds == 0:
+            return
+        
         fig, axes = plt.subplots(1, n_folds, figsize=(5*n_folds, 5))
         if n_folds == 1:
             axes = [axes]
         
-        for idx, fold_result in enumerate(processed_results):
+        plot_idx = 0
+        for fold_result in processed_results:
             if variant_name not in fold_result['variants']:
                 continue
             
             variant = fold_result['variants'][variant_name]
             y_test = fold_result['y_test']
             probs = variant['probs']
+            config = variant['config']
+            threshold = config.get('threshold', 0.5)  # Get ACTUAL threshold for this variant
             
-            axes[idx].hist(probs[y_test == 0], bins=30, alpha=0.7, 
-                          label='Interictal', density=True, color='green')
-            axes[idx].hist(probs[y_test == 1], bins=30, alpha=0.7,
-                          label='Preictal', density=True, color='red')
-            axes[idx].axvline(0.5, color='black', linestyle='--', alpha=0.7)
-            axes[idx].set_xlabel('Probability')
-            axes[idx].set_ylabel('Density')
-            axes[idx].set_title(f'Fold {fold_result["fold"]}')
-            axes[idx].legend()
+            if np.any(y_test == 0):
+                axes[plot_idx].hist(probs[y_test == 0], bins=30, alpha=0.7, 
+                              label='Interictal', density=True, color='green')
+            if np.any(y_test == 1):
+                axes[plot_idx].hist(probs[y_test == 1], bins=30, alpha=0.7,
+                              label='Preictal', density=True, color='red')
+            
+            # Show the ACTUAL threshold for this variant
+            axes[plot_idx].axvline(threshold, color='black', linestyle='--', alpha=0.7,
+                                  label=f'Threshold={threshold:.2f}')
+            axes[plot_idx].set_xlabel('Probability')
+            axes[plot_idx].set_ylabel('Density')
+            axes[plot_idx].set_title(f'Fold {fold_result["fold"]}')
+            axes[plot_idx].legend()
+            plot_idx += 1
         
         plt.suptitle(f'Probability Distributions: {variant_name}')
         plt.tight_layout()
@@ -615,12 +825,16 @@ class Visualizer:
     
     def plot_confusion_matrices(self, processed_results: List[Dict], variant_name: str):
         """Plot confusion matrices for all folds"""
-        n_folds = len(processed_results)
+        n_folds = len([f for f in processed_results if variant_name in f['variants']])
+        if n_folds == 0:
+            return
+        
         fig, axes = plt.subplots(1, n_folds, figsize=(5*n_folds, 5))
         if n_folds == 1:
             axes = [axes]
         
-        for idx, fold_result in enumerate(processed_results):
+        plot_idx = 0
+        for fold_result in processed_results:
             if variant_name not in fold_result['variants']:
                 continue
             
@@ -628,11 +842,15 @@ class Visualizer:
             y_test = fold_result['y_test']
             preds = variant['preds']
             
-            cm = confusion_matrix(y_test, preds)
-            sns.heatmap(cm, annot=True, fmt='d', ax=axes[idx], cmap='Blues')
-            axes[idx].set_xlabel('Predicted')
-            axes[idx].set_ylabel('Actual')
-            axes[idx].set_title(f'Fold {fold_result["fold"]}')
+            try:
+                cm = confusion_matrix(y_test, preds)
+                sns.heatmap(cm, annot=True, fmt='d', ax=axes[plot_idx], cmap='Blues')
+                axes[plot_idx].set_xlabel('Predicted')
+                axes[plot_idx].set_ylabel('Actual')
+                axes[plot_idx].set_title(f'Fold {fold_result["fold"]}')
+                plot_idx += 1
+            except:
+                continue
         
         plt.suptitle(f'Confusion Matrices: {variant_name}')
         plt.tight_layout()
@@ -640,103 +858,148 @@ class Visualizer:
         plt.close()
     
     def plot_metric_comparison(self, summary_df: pd.DataFrame, metric: str):
-        """Plot comparison of a specific metric across variants"""
-        # Select top 20 variants by metric
-        top_variants = summary_df.nlargest(20, f'mean_{metric}')
+        """Plot comparison of a specific metric across variants (CONFIGURABLE top_n)"""
+        mean_col = f'mean_{metric}'
+        if mean_col not in summary_df.columns:
+            return
+        
+        # Select top N variants by metric
+        top_variants = summary_df.nlargest(self.top_n, mean_col)
+        
+        if len(top_variants) == 0:
+            return
         
         plt.figure(figsize=(12, 8))
-        plt.barh(range(len(top_variants)), top_variants[f'mean_{metric}'])
+        plt.barh(range(len(top_variants)), top_variants[mean_col])
         plt.yticks(range(len(top_variants)), top_variants['variant'], fontsize=8)
         plt.xlabel(f'Mean {metric.upper()}')
-        plt.title(f'Top 20 Variants by {metric.upper()}')
+        plt.title(f'Top {self.top_n} Variants by {metric.upper()}')
         plt.tight_layout()
         plt.savefig(self.viz_dir / f'comparison_{metric}.png', bbox_inches='tight')
         plt.close()
     
-    def plot_threshold_sensitivity_analysis(self, processed_results: List[Dict], cal_method: str, ma_window: int):
-        """Analyze how metrics change with threshold"""
-        thresholds = np.linspace(0, 1, 21)
+    def plot_threshold_sensitivity_analysis(
+        self, 
+        processed_results: List[Dict], 
+        cal_method: str, 
+        ma_window: int,
+        percentile: Optional[int] = None,
+        sampling_period: float = 5.0,
+        suppression_duration: int = 60
+    ):
+        """
+        FIXED: Analyze how metrics change with threshold by RE-THRESHOLDING the same probs
+        instead of looking up non-existent variant names
+        """
+        thresholds = np.linspace(0.1, 0.9, 17)
         
         all_aucs = []
         all_sens = []
         all_fprs = []
+        all_f1s = []
         
         for threshold in thresholds:
-            variant_name = f"cal_{cal_method}_ma_{ma_window}_thr_{threshold:.2f}"
-            
             fold_aucs = []
             fold_sens = []
             fold_fprs = []
+            fold_f1s = []
             
             for fold_result in processed_results:
-                if variant_name in fold_result['variants']:
-                    metrics = fold_result['variants'][variant_name]['metrics']
-                    fold_aucs.append(metrics['auc'])
-                    if not np.isnan(metrics['sensitivity']):
-                        fold_sens.append(metrics['sensitivity'])
-                    fold_fprs.append(metrics['fpr_per_hour'])
+                # Get the stored calibrated+MA probs
+                if percentile is not None:
+                    probs_key = f'probs_percentile_p{percentile}_ma{ma_window}'
+                else:
+                    probs_key = f'probs_{cal_method}_ma{ma_window}'
+                
+                if probs_key not in fold_result:
+                    continue
+                
+                probs = fold_result[probs_key]
+                y_test = fold_result['y_test']
+                
+                # Re-threshold at this level
+                preds = apply_threshold(probs, threshold)
+                metrics = MetricsCalculator.compute_all_metrics(
+                    y_test, preds, probs, sampling_period, suppression_duration
+                )
+                
+                fold_aucs.append(metrics['auc'])
+                if not np.isnan(metrics['sensitivity']):
+                    fold_sens.append(metrics['sensitivity'])
+                fold_fprs.append(metrics['fpr_per_hour'])
+                fold_f1s.append(metrics['f1'])
             
             all_aucs.append(np.mean(fold_aucs) if fold_aucs else np.nan)
             all_sens.append(np.mean(fold_sens) if fold_sens else np.nan)
             all_fprs.append(np.mean(fold_fprs) if fold_fprs else np.nan)
+            all_f1s.append(np.mean(fold_f1s) if fold_f1s else np.nan)
         
-        fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+        # Plot
+        fig, axes = plt.subplots(2, 2, figsize=(15, 10))
         
-        axes[0].plot(thresholds, all_aucs, 'o-')
-        axes[0].set_xlabel('Threshold')
-        axes[0].set_ylabel('AUC')
-        axes[0].set_title('AUC vs Threshold')
-        axes[0].grid(True, alpha=0.3)
+        axes[0, 0].plot(thresholds, all_aucs, 'o-', color='blue')
+        axes[0, 0].set_xlabel('Threshold')
+        axes[0, 0].set_ylabel('AUC')
+        axes[0, 0].set_title('AUC vs Threshold')
+        axes[0, 0].grid(True, alpha=0.3)
         
-        axes[1].plot(thresholds, all_sens, 'o-')
-        axes[1].set_xlabel('Threshold')
-        axes[1].set_ylabel('Sensitivity')
-        axes[1].set_title('Sensitivity vs Threshold')
-        axes[1].grid(True, alpha=0.3)
+        axes[0, 1].plot(thresholds, all_sens, 'o-', color='green')
+        axes[0, 1].set_xlabel('Threshold')
+        axes[0, 1].set_ylabel('Sensitivity')
+        axes[0, 1].set_title('Sensitivity vs Threshold')
+        axes[0, 1].grid(True, alpha=0.3)
         
-        axes[2].plot(thresholds, all_fprs, 'o-')
-        axes[2].set_xlabel('Threshold')
-        axes[2].set_ylabel('FPR/hour')
-        axes[2].set_title('FPR/hour vs Threshold')
-        axes[2].grid(True, alpha=0.3)
+        axes[1, 0].plot(thresholds, all_fprs, 'o-', color='red')
+        axes[1, 0].set_xlabel('Threshold')
+        axes[1, 0].set_ylabel('FPR/hour')
+        axes[1, 0].set_title('FPR/hour vs Threshold')
+        axes[1, 0].grid(True, alpha=0.3)
         
-        plt.suptitle(f'Threshold Analysis: cal={cal_method}, ma={ma_window}')
+        axes[1, 1].plot(thresholds, all_f1s, 'o-', color='purple')
+        axes[1, 1].set_xlabel('Threshold')
+        axes[1, 1].set_ylabel('F1 Score')
+        axes[1, 1].set_title('F1 Score vs Threshold')
+        axes[1, 1].grid(True, alpha=0.3)
+        
+        title_suffix = f'_p{percentile}' if percentile else ''
+        plt.suptitle(f'Threshold Sensitivity Analysis: cal={cal_method}{title_suffix}, ma={ma_window}')
         plt.tight_layout()
-        plt.savefig(self.viz_dir / f'threshold_analysis_{cal_method}_ma{ma_window}.png', bbox_inches='tight')
+        plt.savefig(self.viz_dir / f'threshold_analysis_{cal_method}{title_suffix}_ma{ma_window}.png', bbox_inches='tight')
         plt.close()
     
-    def plot_ma_window_comparison(self, processed_results: List[Dict], cal_method: str, threshold: float):
+    def plot_ma_window_comparison(self, processed_results: List[Dict], cal_method: str, threshold: float, percentile: Optional[int] = None):
         """Compare performance across different MA windows"""
         windows = [1, 3, 5, 7, 10]
         
         metrics_by_window = {w: {'auc': [], 'sens': [], 'fpr': []} for w in windows}
         
         for window in windows:
-            if cal_method == 'percentile':
-                # Use a default percentile for comparison
-                variant_name = f"cal_{cal_method}_p10_ma_{window}_thr_{threshold:.2f}"
+            if cal_method == 'percentile' and percentile is not None:
+                variant_name = f"cal_{cal_method}_p{percentile}_ma_{window}_thr_{threshold:.2f}"
             else:
                 variant_name = f"cal_{cal_method}_ma_{window}_thr_{threshold:.2f}"
             
             for fold_result in processed_results:
                 if variant_name in fold_result['variants']:
                     metrics = fold_result['variants'][variant_name]['metrics']
-                    metrics_by_window[window]['auc'].append(metrics['auc'])
+                    if not np.isnan(metrics['auc']):
+                        metrics_by_window[window]['auc'].append(metrics['auc'])
                     if not np.isnan(metrics['sensitivity']):
                         metrics_by_window[window]['sens'].append(metrics['sensitivity'])
-                    metrics_by_window[window]['fpr'].append(metrics['fpr_per_hour'])
+                    if not np.isnan(metrics['fpr_per_hour']):
+                        metrics_by_window[window]['fpr'].append(metrics['fpr_per_hour'])
         
         fig, axes = plt.subplots(1, 3, figsize=(18, 5))
         
-        mean_aucs = [np.mean(metrics_by_window[w]['auc']) for w in windows]
-        std_aucs = [np.std(metrics_by_window[w]['auc']) for w in windows]
+        mean_aucs = [np.mean(metrics_by_window[w]['auc']) if metrics_by_window[w]['auc'] else np.nan for w in windows]
+        std_aucs = [np.std(metrics_by_window[w]['auc']) if metrics_by_window[w]['auc'] else 0 for w in windows]
         axes[0].errorbar(windows, mean_aucs, yerr=std_aucs, marker='o', capsize=5)
         axes[0].set_xlabel('MA Window Size')
         axes[0].set_ylabel('AUC')
         axes[0].set_title('AUC vs MA Window')
         axes[0].grid(True, alpha=0.3)
         
-        mean_sens = [np.mean(metrics_by_window[w]['sens']) if metrics_by_window[w]['sens'] else 0 for w in windows]
+        mean_sens = [np.mean(metrics_by_window[w]['sens']) if metrics_by_window[w]['sens'] else np.nan for w in windows]
         std_sens = [np.std(metrics_by_window[w]['sens']) if metrics_by_window[w]['sens'] else 0 for w in windows]
         axes[1].errorbar(windows, mean_sens, yerr=std_sens, marker='o', capsize=5)
         axes[1].set_xlabel('MA Window Size')
@@ -744,8 +1007,8 @@ class Visualizer:
         axes[1].set_title('Sensitivity vs MA Window')
         axes[1].grid(True, alpha=0.3)
         
-        mean_fprs = [np.mean(metrics_by_window[w]['fpr']) for w in windows]
-        std_fprs = [np.std(metrics_by_window[w]['fpr']) for w in windows]
+        mean_fprs = [np.mean(metrics_by_window[w]['fpr']) if metrics_by_window[w]['fpr'] else np.nan for w in windows]
+        std_fprs = [np.std(metrics_by_window[w]['fpr']) if metrics_by_window[w]['fpr'] else 0 for w in windows]
         axes[2].errorbar(windows, mean_fprs, yerr=std_fprs, marker='o', capsize=5)
         axes[2].set_xlabel('MA Window Size')
         axes[2].set_ylabel('FPR/hour')
@@ -817,7 +1080,7 @@ class Visualizer:
         plt.close()
     
     def plot_pareto_frontier(self, summary_df: pd.DataFrame):
-        """Plot Pareto frontier for sensitivity vs FPR tradeoff"""
+        """Plot Pareto frontier for sensitivity vs FPR tradeoff and SAVE CSV"""
         plt.figure(figsize=(12, 8))
         
         # Filter out NaN values
@@ -827,10 +1090,11 @@ class Visualizer:
         ].copy()
         
         if len(valid_data) == 0:
+            plt.close()
             return
         
         # Plot all points
-        plt.scatter(valid_data['mean_fpr_per_hour'], 
+        scatter = plt.scatter(valid_data['mean_fpr_per_hour'], 
                    valid_data['mean_sensitivity'],
                    c=valid_data['mean_auc'],
                    cmap='viridis',
@@ -855,9 +1119,9 @@ class Visualizer:
         pareto_df = valid_data.loc[pareto_points].sort_values('mean_fpr_per_hour')
         plt.plot(pareto_df['mean_fpr_per_hour'], 
                 pareto_df['mean_sensitivity'],
-                'r-', linewidth=2, label='Pareto Frontier')
+                'r-', linewidth=2, label='Pareto Frontier', marker='o')
         
-        plt.colorbar(label='Mean AUC')
+        plt.colorbar(scatter, label='Mean AUC')
         plt.xlabel('Mean FPR per Hour')
         plt.ylabel('Mean Sensitivity')
         plt.title('Sensitivity vs FPR Tradeoff (Pareto Frontier)')
@@ -867,70 +1131,9 @@ class Visualizer:
         plt.savefig(self.viz_dir / 'pareto_frontier.png', bbox_inches='tight')
         plt.close()
         
-    def plot_pareto_frontier(self, summary_df: pd.DataFrame):
-        """Plot Pareto frontier for sensitivity vs FPR tradeoff"""
-        plt.figure(figsize=(12, 8))
-        
-        # Filter out NaN values
-        valid_data = summary_df[
-            ~summary_df['mean_sensitivity'].isna() & 
-            ~summary_df['mean_fpr_per_hour'].isna()
-        ].copy()
-        
-        if len(valid_data) == 0:
-            return
-        
-        # Plot all points
-        plt.scatter(valid_data['mean_fpr_per_hour'], 
-                   valid_data['mean_sensitivity'],
-                   c=valid_data['mean_auc'],
-                   cmap='viridis',
-                   s=50,
-                   alpha=0.6)
-        
-        # Find Pareto frontier (maximize sensitivity, minimize FPR)
-        pareto_points = []
-        for idx, row in valid_data.iterrows():
-            is_pareto = True
-            for _, other_row in valid_data.iterrows():
-                if (other_row['mean_sensitivity'] >= row['mean_sensitivity'] and
-                    other_row['mean_fpr_per_hour'] <= row['mean_fpr_per_hour'] and
-                    (other_row['mean_sensitivity'] > row['mean_sensitivity'] or
-                     other_row['mean_fpr_per_hour'] < row['mean_fpr_per_hour'])):
-                    is_pareto = False
-                    break
-            if is_pareto:
-                pareto_points.append(idx)
-        
-        # Highlight Pareto frontier
-        pareto_df = valid_data.loc[pareto_points].sort_values('mean_fpr_per_hour')
-        plt.plot(pareto_df['mean_fpr_per_hour'], 
-                pareto_df['mean_sensitivity'],
-                'r-', linewidth=2, label='Pareto Frontier')
-        
-        plt.colorbar(label='Mean AUC')
-        plt.xlabel('Mean FPR per Hour')
-        plt.ylabel('Mean Sensitivity')
-        plt.title('Sensitivity vs FPR Tradeoff (Pareto Frontier)')
-        plt.legend()
-        plt.grid(True, alpha=0.3)
-        plt.tight_layout()
-        plt.savefig(self.viz_dir / 'pareto_frontier.png', bbox_inches='tight')
-        plt.close()
-        
-        # Save Pareto optimal variants
+        # Save Pareto optimal variants to CSV
         pareto_df.to_csv(self.run_dir / 'pareto_optimal_variants.csv', index=False)
-    
-    def plot_ensemble_correlation(self, processed_results: List[Dict]):
-        """Plot correlation between ensemble models for each fold"""
-        for fold_result in processed_results:
-            fold_num = fold_result['fold']
-            y_test = fold_result['y_test']
-            
-            # Get test predictions from all inner folds
-            # We need to reconstruct this from raw data
-            # This will be populated when we have access to raw results
-            pass
+        print(f"  Saved Pareto optimal variants ({len(pareto_df)} points)")
     
     def plot_training_curves_summary(self, raw_results: Dict):
         """Generate training curve summaries from raw results"""
@@ -941,13 +1144,20 @@ class Visualizer:
             fold_num = outer_fold['outer_fold']
             
             # Plot training curves for each inner fold
-            fig, axes = plt.subplots(2, 3, figsize=(18, 10))
+            n_inner = len(outer_fold['inner_folds'])
+            n_cols = 3
+            n_rows = (n_inner + n_cols - 1) // n_cols
+            
+            fig, axes = plt.subplots(n_rows, n_cols, figsize=(6*n_cols, 5*n_rows))
+            if n_rows == 1 and n_cols == 1:
+                axes = np.array([[axes]])
+            elif n_rows == 1:
+                axes = axes.reshape(1, -1)
+            elif n_cols == 1:
+                axes = axes.reshape(-1, 1)
             axes = axes.flatten()
             
             for inner_idx, inner_fold in enumerate(outer_fold['inner_folds']):
-                if inner_idx >= 6:  # Max 6 subplots
-                    break
-                
                 training_log = inner_fold['training_log']
                 
                 epochs = [log['epoch'] for log in training_log]
@@ -978,7 +1188,7 @@ class Visualizer:
                 ax.legend(lines, labels, loc='best')
             
             # Hide unused subplots
-            for idx in range(len(outer_fold['inner_folds']), 6):
+            for idx in range(len(outer_fold['inner_folds']), len(axes)):
                 axes[idx].axis('off')
             
             plt.suptitle(f'Training Curves - Outer Fold {fold_num}')
@@ -1018,13 +1228,16 @@ class SummaryGenerator:
             # Aggregate metrics
             summary = {'variant': variant_name}
             
-            # Extract config
-            config = processed_results[0]['variants'][variant_name]['config']
-            summary.update({f'config_{k}': v for k, v in config.items()})
+            # Extract config (find first fold that has this variant)
+            for fold_result in processed_results:
+                if variant_name in fold_result['variants']:
+                    config = fold_result['variants'][variant_name]['config']
+                    summary.update({f'config_{k}': v for k, v in config.items()})
+                    break
             
-            # Compute mean and std for each metric
+            # Compute mean and std for ALL metrics
             for metric in variant_metrics[0].keys():
-                values = [m[metric] for m in variant_metrics if not np.isnan(m[metric])]
+                values = [m[metric] for m in variant_metrics if not (isinstance(m[metric], float) and np.isnan(m[metric]))]
                 if values:
                     summary[f'mean_{metric}'] = np.mean(values)
                     summary[f'std_{metric}'] = np.std(values)
@@ -1037,81 +1250,111 @@ class SummaryGenerator:
         return pd.DataFrame(summary_data)
     
     @staticmethod
-    def create_best_variants_table(summary_df: pd.DataFrame, top_n: int = 10) -> Dict[str, pd.DataFrame]:
-        """Create tables of best variants for each metric"""
-        metrics = ['auc', 'sensitivity', 'f1', 'precision', 'recall']
+    def create_best_variants_table(summary_df: pd.DataFrame, top_n: Union[int, str] = 10) -> Dict[str, pd.DataFrame]:
+        """
+        Create tables of best variants for each metric with ALL relevant metrics
+        
+        Args:
+            summary_df: Summary dataframe
+            top_n: Number of top variants (int) or "all"
+        """
+        metrics = ['auc', 'sensitivity', 'f1', 'precision', 'recall', 'balanced_accuracy', 'mcc']
         best_tables = {}
+        
+        # Determine actual top_n value
+        if isinstance(top_n, str) and top_n.lower() == 'all':
+            n = len(summary_df)
+        else:
+            n = int(top_n)
         
         for metric in metrics:
             mean_col = f'mean_{metric}'
-            if mean_col in summary_df.columns:
-                best_variants = summary_df.nlargest(top_n, mean_col)
-                best_tables[metric] = best_variants[
-                    ['variant', mean_col, f'std_{metric}', 'mean_fpr_per_hour']
-                ].copy()
+            if mean_col not in summary_df.columns:
+                continue
+            
+            best_variants = summary_df.nlargest(n, mean_col)
+            
+            # Include ALL relevant columns
+            columns_to_include = ['variant']
+            for col in summary_df.columns:
+                if col.startswith('mean_') or col.startswith('std_'):
+                    columns_to_include.append(col)
+            
+            best_tables[metric] = best_variants[
+                [col for col in columns_to_include if col in best_variants.columns]
+            ].copy()
         
         return best_tables
     
     @staticmethod
     def create_calibration_comparison_table(summary_df: pd.DataFrame) -> pd.DataFrame:
         """Compare calibration methods"""
-        # Group by calibration method
+        if 'config_calibration' not in summary_df.columns:
+            return pd.DataFrame()
+        
         cal_methods = summary_df['config_calibration'].unique()
         
         comparison_data = []
         for cal_method in cal_methods:
             method_data = summary_df[summary_df['config_calibration'] == cal_method]
             
-            comparison_data.append({
-                'calibration_method': cal_method,
-                'mean_auc': method_data['mean_auc'].mean(),
-                'mean_sensitivity': method_data['mean_sensitivity'].mean(),
-                'mean_fpr_per_hour': method_data['mean_fpr_per_hour'].mean(),
-                'mean_f1': method_data['mean_f1'].mean(),
-                'n_variants': len(method_data)
-            })
+            row = {'calibration_method': cal_method, 'n_variants': len(method_data)}
+            
+            # Add all mean metrics
+            for col in method_data.columns:
+                if col.startswith('mean_'):
+                    row[col.replace('mean_', 'avg_')] = method_data[col].mean()
+            
+            comparison_data.append(row)
         
-        return pd.DataFrame(comparison_data).sort_values('mean_auc', ascending=False)
+        df = pd.DataFrame(comparison_data)
+        if 'avg_auc' in df.columns:
+            df = df.sort_values('avg_auc', ascending=False)
+        return df
     
     @staticmethod
     def create_ma_comparison_table(summary_df: pd.DataFrame) -> pd.DataFrame:
         """Compare moving average windows"""
-        # Group by MA window
+        if 'config_ma_window' not in summary_df.columns:
+            return pd.DataFrame()
+        
         ma_windows = summary_df['config_ma_window'].unique()
         
         comparison_data = []
         for ma_window in sorted(ma_windows):
             window_data = summary_df[summary_df['config_ma_window'] == ma_window]
             
-            comparison_data.append({
-                'ma_window': ma_window,
-                'mean_auc': window_data['mean_auc'].mean(),
-                'mean_sensitivity': window_data['mean_sensitivity'].mean(),
-                'mean_fpr_per_hour': window_data['mean_fpr_per_hour'].mean(),
-                'mean_f1': window_data['mean_f1'].mean(),
-                'n_variants': len(window_data)
-            })
+            row = {'ma_window': ma_window, 'n_variants': len(window_data)}
+            
+            # Add all mean metrics
+            for col in window_data.columns:
+                if col.startswith('mean_'):
+                    row[col.replace('mean_', 'avg_')] = window_data[col].mean()
+            
+            comparison_data.append(row)
         
         return pd.DataFrame(comparison_data).sort_values('ma_window')
     
     @staticmethod
     def create_threshold_comparison_table(summary_df: pd.DataFrame) -> pd.DataFrame:
         """Compare thresholds"""
-        # Group by threshold
+        if 'config_threshold' not in summary_df.columns:
+            return pd.DataFrame()
+        
         thresholds = summary_df['config_threshold'].unique()
         
         comparison_data = []
         for threshold in sorted(thresholds):
             threshold_data = summary_df[summary_df['config_threshold'] == threshold]
             
-            comparison_data.append({
-                'threshold': threshold,
-                'mean_auc': threshold_data['mean_auc'].mean(),
-                'mean_sensitivity': threshold_data['mean_sensitivity'].mean(),
-                'mean_fpr_per_hour': threshold_data['mean_fpr_per_hour'].mean(),
-                'mean_f1': threshold_data['mean_f1'].mean(),
-                'n_variants': len(threshold_data)
-            })
+            row = {'threshold': threshold, 'n_variants': len(threshold_data)}
+            
+            # Add all mean metrics
+            for col in threshold_data.columns:
+                if col.startswith('mean_'):
+                    row[col.replace('mean_', 'avg_')] = threshold_data[col].mean()
+            
+            comparison_data.append(row)
         
         return pd.DataFrame(comparison_data).sort_values('threshold')
 
@@ -1120,23 +1363,28 @@ class SummaryGenerator:
 # MAIN ANALYSIS PIPELINE
 # ============================================================================
 
-def analyze_run(run_dir: str, 
-                calibration_methods: List[str] = None,
-                ma_windows: List[int] = None,
-                thresholds: List[float] = None,
-                percentiles: List[int] = None):
-    """Main analysis function"""
+def analyze_run(
+    run_dir: str, 
+    calibration_methods: List[str] = None,
+    ma_windows: List[int] = None,
+    thresholds: List[float] = None,
+    percentiles: List[int] = None,
+    top_n: Union[int, str] = 10,
+    sampling_period: float = 5.0,
+    suppression_duration: int = 60
+):
+    """Main analysis function with all improvements"""
     
     run_path = Path(run_dir)
     
     # Load raw predictions
     raw_predictions_path = run_path / 'raw_predictions.pkl'
     if not raw_predictions_path.exists():
-        print(f"Error: {raw_predictions_path} not found!")
+        print(f"❌ Error: {raw_predictions_path} not found!")
         return
     
     print(f"\n{'='*80}")
-    print(f"Analyzing run: {run_dir}")
+    print(f"🔬 ANALYZING RUN: {run_dir}")
     print(f"{'='*80}\n")
     
     with open(raw_predictions_path, 'rb') as f:
@@ -1147,7 +1395,7 @@ def analyze_run(run_dir: str,
     if config_path.exists():
         with open(config_path, 'r') as f:
             config = json.load(f)
-        print("Configuration:")
+        print("📋 Configuration:")
         for key, value in config['arguments'].items():
             print(f"  {key}: {value}")
         print()
@@ -1162,9 +1410,31 @@ def analyze_run(run_dir: str,
     if percentiles is None:
         percentiles = [5, 10, 15, 20]
     
+    # Parse top_n
+    if isinstance(top_n, str):
+        if top_n.lower() == 'all':
+            display_n = 'all'
+            n_display = None  # Will be set later
+        else:
+            display_n = int(top_n)
+            n_display = display_n
+    else:
+        display_n = top_n
+        n_display = top_n
+    
+    print(f"⚙️  Analysis Parameters:")
+    print(f"  Calibration methods: {calibration_methods}")
+    print(f"  MA windows: {ma_windows}")
+    print(f"  Thresholds: {thresholds}")
+    print(f"  Percentiles: {percentiles}")
+    print(f"  Top-N display: {display_n}")
+    print(f"  Sampling period: {sampling_period}s")
+    print(f"  Suppression duration: {suppression_duration} samples")
+    print()
+    
     # Process all variants
-    print("Processing all variants...")
-    processor = ResultsProcessor(raw_results, run_path)
+    print("🔄 Processing all variants...")
+    processor = ResultsProcessor(raw_results, run_path, sampling_period, suppression_duration)
     processed_results = processor.process_all_variants(
         calibration_methods=calibration_methods,
         ma_windows=ma_windows,
@@ -1173,110 +1443,140 @@ def analyze_run(run_dir: str,
     )
     
     # Generate summary statistics
-    print("\nGenerating summary statistics...")
+    print("\n📊 Generating summary statistics...")
     summary_df = SummaryGenerator.create_variant_summary(processed_results)
     summary_df.to_csv(run_path / 'variant_summary.csv', index=False)
-    print(f"  Saved variant_summary.csv ({len(summary_df)} variants)")
+    print(f"  ✅ Saved variant_summary.csv ({len(summary_df)} variants)")
     
-    # Best variants tables
-    best_tables = SummaryGenerator.create_best_variants_table(summary_df, top_n=10)
+    # Best variants tables with ALL metrics
+    best_tables = SummaryGenerator.create_best_variants_table(summary_df, top_n=display_n)
     for metric, table in best_tables.items():
         table.to_csv(run_path / f'best_variants_{metric}.csv', index=False)
-        print(f"  Saved best_variants_{metric}.csv")
+        print(f"  ✅ Saved best_variants_{metric}.csv")
     
     # Comparison tables
     cal_comparison = SummaryGenerator.create_calibration_comparison_table(summary_df)
     cal_comparison.to_csv(run_path / 'calibration_comparison.csv', index=False)
-    print(f"  Saved calibration_comparison.csv")
+    print(f"  ✅ Saved calibration_comparison.csv")
     
     ma_comparison = SummaryGenerator.create_ma_comparison_table(summary_df)
     ma_comparison.to_csv(run_path / 'ma_window_comparison.csv', index=False)
-    print(f"  Saved ma_window_comparison.csv")
+    print(f"  ✅ Saved ma_window_comparison.csv")
     
     threshold_comparison = SummaryGenerator.create_threshold_comparison_table(summary_df)
     threshold_comparison.to_csv(run_path / 'threshold_comparison.csv', index=False)
-    print(f"  Saved threshold_comparison.csv")
+    print(f"  ✅ Saved threshold_comparison.csv")
+    
+    # Determine display count
+    if n_display is None:
+        n_display = len(summary_df)
+    else:
+        n_display = min(n_display, len(summary_df))
     
     # Display top results
     print("\n" + "="*80)
-    print("TOP 10 VARIANTS BY AUC:")
+    print(f"🏆 TOP {n_display} VARIANTS BY AUC:")
     print("="*80)
-    top_auc = summary_df.nlargest(10, 'mean_auc')[
-        ['variant', 'mean_auc', 'std_auc', 'mean_sensitivity', 'mean_fpr_per_hour']
-    ]
-    print(top_auc.to_string(index=False))
+    if len(summary_df) > 0:
+        top_auc = summary_df.nlargest(n_display, 'mean_auc')[
+            ['variant', 'mean_auc', 'std_auc', 'mean_sensitivity', 'mean_fpr_per_hour']
+        ]
+        print(top_auc.to_string(index=False))
+    else:
+        print("  No variants found!")
 
     print("\n" + "="*80)
-    print("Top 10 Sensitivity and FPR:")
+    print(f"⚡ TOP {n_display} EVENT SENSITIVITY AND FPR (MOST IMPORTANT RESULT):")
     print("="*80)
-    top_sen_fpr = summary_df.sort_values(['mean_sensitivity', 'mean_fpr_per_hour'], ascending=[False, True])[
-        ['variant', 'mean_auc', 'std_auc', 'mean_sensitivity', 'mean_fpr_per_hour', 'mean_fpr_sup']
-    ]
-    print(top_sen_fpr[0:10].to_string(index=False))
+    if len(summary_df) > 0:
+        top_sen_fpr = summary_df.sort_values(['mean_sensitivity', 'mean_fpr_per_hour'], ascending=[False, True]).head(n_display)[
+            ['variant', 'mean_auc', 'std_auc', 'mean_sensitivity', 'mean_fpr_per_hour', 'mean_fpr_sup', 'mean_f1']
+        ]
+        print(top_sen_fpr.to_string(index=False))
+    else:
+        print("  No variants found!")
     
-    print("\n" + "="*80)
-    print("CALIBRATION METHOD COMPARISON:")
-    print("="*80)
-    print(cal_comparison.to_string(index=False))
+    if len(cal_comparison) > 0:
+        print("\n" + "="*80)
+        print("📈 CALIBRATION METHOD COMPARISON:")
+        print("="*80)
+        print(cal_comparison.to_string(index=False))
     
-    print("\n" + "="*80)
-    print("MOVING AVERAGE WINDOW COMPARISON:")
-    print("="*80)
-    print(ma_comparison.to_string(index=False))
+    if len(ma_comparison) > 0:
+        print("\n" + "="*80)
+        print("📉 MOVING AVERAGE WINDOW COMPARISON:")
+        print("="*80)
+        print(ma_comparison.to_string(index=False))
     
     # Generate visualizations
-    print("\nGenerating visualizations...")
-    visualizer = Visualizer(run_path)
+    print("\n🎨 Generating visualizations...")
+    visualizer = Visualizer(run_path, top_n=n_display if isinstance(display_n, int) else 20)
     
     # Get best variant for detailed plots
-    best_variant = summary_df.nlargest(1, 'mean_auc').iloc[0]['variant']
-    print(f"  Best variant: {best_variant}")
-    
-    # ROC curves for best variant
-    visualizer.plot_roc_curves(processed_results, best_variant)
-    print(f"  Generated ROC curves")
-    
-    # Precision-recall curves
-    visualizer.plot_precision_recall_curves(processed_results, best_variant)
-    print(f"  Generated PR curves")
-    
-    # Probability distributions
-    visualizer.plot_probability_distributions(processed_results, best_variant)
-    print(f"  Generated probability distributions")
-    
-    # Confusion matrices
-    visualizer.plot_confusion_matrices(processed_results, best_variant)
-    print(f"  Generated confusion matrices")
-    
-    # Metric comparisons
-    for metric in ['auc', 'sensitivity', 'f1']:
-        visualizer.plot_metric_comparison(summary_df, metric)
-    print(f"  Generated metric comparisons")
-    
-    # Threshold analysis for each calibration method
-    for cal_method in ['none', 'percentile', 'beta']:
-        visualizer.plot_threshold_sensitivity_analysis(processed_results, cal_method, ma_window=5)
-    print(f"  Generated threshold analyses")
-    
-    # MA window comparison
-    for cal_method in ['none', 'percentile']:
-        visualizer.plot_ma_window_comparison(processed_results, cal_method, threshold=0.5)
-    print(f"  Generated MA window comparisons")
-    
-    # Calibration method comparison
-    visualizer.plot_calibration_method_comparison(processed_results, ma_window=5, threshold=0.5)
-    print(f"  Generated calibration method comparison")
-    
-    # Pareto frontier
-    visualizer.plot_pareto_frontier(summary_df)
-    print(f"  Generated Pareto frontier")
+    if len(summary_df) > 0:
+        best_variant = summary_df.nlargest(1, 'mean_auc').iloc[0]['variant']
+        print(f"  🌟 Best variant: {best_variant}")
+        
+        # ROC curves for best variant
+        visualizer.plot_roc_curves(processed_results, best_variant)
+        print(f"  ✅ Generated ROC curves")
+        
+        # Precision-recall curves
+        visualizer.plot_precision_recall_curves(processed_results, best_variant)
+        print(f"  ✅ Generated PR curves")
+        
+        # Probability distributions
+        visualizer.plot_probability_distributions(processed_results, best_variant)
+        print(f"  ✅ Generated probability distributions")
+        
+        # Confusion matrices
+        visualizer.plot_confusion_matrices(processed_results, best_variant)
+        print(f"  ✅ Generated confusion matrices")
+        
+        # Metric comparisons
+        for metric in ['auc', 'sensitivity', 'f1', 'balanced_accuracy', 'mcc']:
+            visualizer.plot_metric_comparison(summary_df, metric)
+        print(f"  ✅ Generated metric comparisons")
+        
+        # Threshold analysis for each calibration method (FIXED VERSION)
+        for cal_method in ['none', 'beta', 'isotonic']:
+            for ma_win in [1, 5]:
+                visualizer.plot_threshold_sensitivity_analysis(
+                    processed_results, cal_method, ma_win, 
+                    sampling_period=sampling_period,
+                    suppression_duration=suppression_duration
+                )
+        
+        # Threshold analysis for percentile
+        for percentile in [10, 20]:
+            for ma_win in [1, 5]:
+                visualizer.plot_threshold_sensitivity_analysis(
+                    processed_results, 'percentile', ma_win, percentile=percentile,
+                    sampling_period=sampling_period,
+                    suppression_duration=suppression_duration
+                )
+        print(f"  ✅ Generated threshold sensitivity analyses")
+        
+        # MA window comparison
+        for cal_method in ['none', 'beta']:
+            visualizer.plot_ma_window_comparison(processed_results, cal_method, threshold=0.5)
+        visualizer.plot_ma_window_comparison(processed_results, 'percentile', threshold=0.5, percentile=10)
+        print(f"  ✅ Generated MA window comparisons")
+        
+        # Calibration method comparison
+        visualizer.plot_calibration_method_comparison(processed_results, ma_window=5, threshold=0.5)
+        print(f"  ✅ Generated calibration method comparison")
+        
+        # Pareto frontier
+        visualizer.plot_pareto_frontier(summary_df)
+        print(f"  ✅ Generated Pareto frontier")
     
     # Training curves summary from raw data
     visualizer.plot_training_curves_summary(raw_results)
-    print(f"  Generated training curves summary")
+    print(f"  ✅ Generated training curves summary")
     
     # Ensemble correlation analysis
-    print("\nGenerating ensemble correlation analysis...")
+    print("\n🔗 Generating ensemble correlation analysis...")
     for outer_fold in raw_results['outer_folds']:
         fold_num = outer_fold['outer_fold']
         
@@ -1295,14 +1595,19 @@ def analyze_run(run_dir: str,
             y_test,
             save_path=str(save_path)
         )
-    print(f"  Generated ensemble correlation plots")
+    print(f"  ✅ Generated ensemble correlation plots")
     
     # Generate detailed per-fold visualizations using TrainingVisualizer
-    print("\nGenerating detailed per-fold visualizations...")
+    print("\n📸 Generating detailed per-fold visualizations...")
     generate_training_visualizations(raw_results, run_path)
     
-    print(f"\nAnalysis complete! Results saved to {run_dir}")
-    print(f"Visualizations saved to {run_path / 'visualizations'}")
+    print(f"\n{'='*80}")
+    print(f"✨ ANALYSIS COMPLETE!")
+    print(f"{'='*80}")
+    print(f"📁 Results saved to: {run_dir}")
+    print(f"📊 Visualizations saved to: {run_path / 'visualizations'}")
+    print(f"🎯 Total variants analyzed: {len(summary_df)}")
+    print(f"{'='*80}\n")
 
 
 def generate_training_visualizations(raw_results: Dict, run_path: Path):
@@ -1356,7 +1661,7 @@ def generate_training_visualizations(raw_results: Dict, run_path: Path):
                 vlabels=val_labels
             )
     
-    print(f"  Generated detailed per-fold visualizations in folds/ directory")
+    print(f"  ✅ Generated detailed per-fold visualizations in folds/ directory")
 
 
 # ============================================================================
@@ -1365,18 +1670,36 @@ def generate_training_visualizations(raw_results: Dict, run_path: Path):
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Comprehensive analysis of seizure prediction results',
+        description='Comprehensive Analysis of Seizure Prediction Results (IMPROVED VERSION)',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
   # Analyze most recent run
   python analyze_results2.py
   
-  # Analyze specific run
-  python analyze_results2.py --run_dir runs/run1_20240101_120000
+  # Analyze specific run with custom top-N
+  python analyze_results2.py --run_dir runs/run1_20240101_120000 --top_n 20
+  
+  # Show all variants
+  python analyze_results2.py --top_n all
   
   # Customize analysis parameters
   python analyze_results2.py --run_dir runs/run1 --calibration_methods none percentile --ma_windows 1 3 5
+  
+  # Custom sampling period and suppression
+  python analyze_results2.py --sampling_period 4.0 --suppression_duration 75
+
+IMPROVEMENTS IN THIS VERSION:
+- ✅ Fixed moving average bug (preserves time order within label regions)
+- ✅ FPR/hour computed over interictal time only (standard definition)
+- ✅ Added metrics: balanced accuracy, MCC, Brier score, ECE, log loss
+- ✅ Best-variants CSVs include ALL metrics
+- ✅ Configurable top-N (supports numbers and "all")
+- ✅ Fixed threshold sensitivity analysis (re-thresholds same probs)
+- ✅ Removed duplicate Pareto function
+- ✅ Probability plots show correct threshold per variant
+- ✅ Configurable sampling period and suppression duration
+- ✅ Enhanced robustness and error handling
         """
     )
     
@@ -1393,6 +1716,12 @@ Examples:
                        help='Thresholds to analyze')
     parser.add_argument('--percentiles', type=int, nargs='+',
                        help='Percentiles for percentile calibration')
+    parser.add_argument('--top_n', type=str, default='10',
+                       help='Number of top variants to display (or "all")')
+    parser.add_argument('--sampling_period', type=float, default=5.0,
+                       help='Sampling period in seconds (default: 5.0)')
+    parser.add_argument('--suppression_duration', type=int, default=60,
+                       help='Suppression duration in samples (default: 60)')
     
     args = parser.parse_args()
     
@@ -1403,16 +1732,16 @@ Examples:
         # Find most recent run
         runs_path = Path(args.runs_dir)
         if not runs_path.exists():
-            print(f"Error: Runs directory {runs_path} does not exist")
+            print(f"❌ Error: Runs directory {runs_path} does not exist")
             return
         
         run_dirs = [d for d in runs_path.iterdir() if d.is_dir() and d.name.startswith('run')]
         if not run_dirs:
-            print(f"Error: No run directories found in {runs_path}")
+            print(f"❌ Error: No run directories found in {runs_path}")
             return
         
         run_dir = str(max(run_dirs, key=lambda x: x.stat().st_mtime))
-        print(f"Analyzing most recent run: {Path(run_dir).name}")
+        print(f"📂 Analyzing most recent run: {Path(run_dir).name}\n")
     
     # Run analysis
     analyze_run(
@@ -1420,7 +1749,10 @@ Examples:
         calibration_methods=args.calibration_methods,
         ma_windows=args.ma_windows,
         thresholds=args.thresholds,
-        percentiles=args.percentiles
+        percentiles=args.percentiles,
+        top_n=args.top_n,
+        sampling_period=args.sampling_period,
+        suppression_duration=args.suppression_duration
     )
 
 
