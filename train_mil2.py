@@ -19,12 +19,15 @@ import pickle
 
 warnings.filterwarnings("ignore")
 
-def mil_confident_loss(instance_logits, bag_label, T=10):
-    weights = torch.softmax(instance_logits[:, 1] / T, dim=0).unsqueeze(-1)  
-    bag_logit = (weights * instance_logits).sum(dim=0, keepdim=True)
-    bag_loss = F.cross_entropy(bag_logit, bag_label.unsqueeze(0))
-    total_loss = bag_loss 
-    return total_loss
+def mil_confident_loss(instance_logits, bag_label):
+    if bag_label == 1:
+        bag_mean = torch.mean(instance_logits, dim=0, keepdim=True)
+        bag_loss = F.cross_entropy(bag_mean, bag_label.unsqueeze(0)) * 2
+    else:
+        bag_labels = torch.zeros(instance_logits.size(0), dtype=torch.long,
+                                 device=instance_logits.device)
+        bag_loss = F.cross_entropy(instance_logits, bag_labels)
+    return bag_loss
 
 
 class Trainer:
