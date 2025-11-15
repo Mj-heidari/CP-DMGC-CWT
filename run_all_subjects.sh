@@ -9,8 +9,9 @@ LR=1e-3
 SUFFIX="zscore_F_T"
 INNER_CV_MODE="stratified"
 
-# Define subjects (CHB-MIT has subjects 01-24)
-SUBJECTS=(01 02 03 04 05 06 07 08 09 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24)
+# Define subjects (CHB-MIT has subjects 01-24) 
+# - subject 12 is excluded due to incosistant channel naming
+SUBJECTS=(01 02 03 04 05 06 07 08 09 10 11 13 14 15 16 17 18 19 20 21 22 23 24)
 
 # Define models
 MODELS=(EEGWaveNet CE-stSENet MB_dMGC_CWTFFNet)
