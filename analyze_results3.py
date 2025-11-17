@@ -24,10 +24,9 @@ import seaborn as sns
 import pandas as pd
 from pathlib import Path
 import argparse
-from sklearn.metrics import roc_curve, auc, roc_auc_score, confusion_matrix
-from typing import Dict, List, Tuple, Optional, Union
+from sklearn.metrics import roc_curve, auc, roc_auc_score
+from typing import Dict, List, Union
 import warnings
-import os
 
 warnings.filterwarnings('ignore')
 
@@ -122,7 +121,8 @@ class MetricsCalculator:
         # AUC
         try:
             metrics['auc'] = roc_auc_score(y_true, y_probs)
-        except:
+        except Exception as e:
+            print('error in computing AUC: ', e)
             metrics['auc'] = np.nan
         
         # Sensitivity: at least one preictal detected
@@ -209,6 +209,7 @@ class ResultsProcessor:
         fold_results = {
             'fold': fold_num,
             'y_test': y_test,
+            'test_probs_stack': test_probs_stack,
             'variants': {},
             'base_probs': base_probs
         }
@@ -277,7 +278,8 @@ class Visualizer:
                 plt.plot(fpr, tpr, alpha=0.7, 
                         label=f"Fold {fold_result['fold']} (AUC={roc_auc:.3f})")
                 has_data = True
-            except:
+            except Exception as e:
+                print('Error in computing ROC curve:', e)
                 continue
         
         if not has_data:
@@ -466,6 +468,80 @@ class Visualizer:
         # Save Pareto optimal variants to CSV
         pareto_df.to_csv(self.run_dir / 'pareto_optimal_variants.csv', index=False)
         print(f"  ✅ Saved Pareto optimal variants ({len(pareto_df)} points)")
+    
+    def plot_preical_preds(self, processed_results: List[Dict], show=False):
+        """
+        Plot average ± std of predictions across models in time order.
+
+        Args:
+            test_probs_stack (np.ndarray): Shape (n_models, n_samples), predicted probabilities per model.
+            tlabels (np.ndarray): Shape (n_samples,), true labels.
+            save_path (str, optional): Path to save the plot.
+            show (bool): If True, displays the plot interactively.
+        """
+        for fold_result in processed_results:
+            fold = fold_result["fold"]
+            y_test = fold_result['y_test']
+            test_probs_stack = fold_result['test_probs_stack']
+
+            mask = (y_test == 1)
+            if not np.any(mask):
+                print("⚠️  No label=1 samples found in test set — correlation skipped.")
+                return None
+
+            probs_preictal = test_probs_stack[:, mask]
+            n_samples = probs_preictal.shape[1]
+
+            # --- Average and std across models for each preictal sample (in order)
+            mean_probs = probs_preictal.mean(axis=0)
+            std_probs = probs_preictal.std(axis=0)
+
+            # --- Plot both
+            fig, axes = plt.subplots(1, 1, figsize=(5, 3.5))
+
+            # mean ± std plot
+            x = np.arange(n_samples)
+            plt.plot(x, mean_probs, color='blue', label='Mean prediction')
+            plt.fill_between(x, mean_probs - std_probs, mean_probs + std_probs,
+                                color='blue', alpha=0.2, label='±1 STD')
+            plt.xlabel("Index")
+            plt.ylabel("Probability")
+            plt.ylim(0, 1)
+            plt.legend(loc="upper left")
+
+            plt.tight_layout()
+            if self.viz_dir:
+                plt.savefig(self.viz_dir / f"preical_preds_{fold}.png", dpi=300)
+                plt.close(fig)
+            elif show:
+                plt.show()
+
+    def plot_probability_distributions(self, processed_results: List[Dict],):
+        """Plot probability distributions for preictal vs interictal with CORRECT threshold line"""
+        for fold_result in processed_results:
+            fold = fold_result["fold"]
+            y_test = fold_result['y_test']
+            probs = fold_result['base_probs']
+
+            fig, axes = plt.subplots(1, 1, figsize=(5, 3.5))
+
+            if np.any(y_test == 0):
+                plt.hist(probs[y_test == 0], bins=30, alpha=0.7, 
+                                label='Interictal', density=True, color='blue')
+            if np.any(y_test == 1):
+                plt.hist(probs[y_test == 1], bins=30, alpha=0.7,
+                                label='Preictal', density=True, color='orange')
+            
+            plt.axvline(0.5, color='black', linestyle='--', alpha=0.7,
+                                    label=f'Threshold={0.5:.2f}')
+            plt.xlabel('Probability')
+            plt.xlim(0, 1)
+            plt.ylabel('Density')
+            plt.legend(loc="upper left")
+            
+            plt.tight_layout()
+            plt.savefig(self.viz_dir / f"distribution_{fold}.png", dpi=300, bbox_inches='tight')
+            plt.close()
 
 
 # ============================================================================
@@ -654,7 +730,7 @@ def analyze_run(
         display_n = top_n
         n_display = top_n
     
-    print(f"⚙️  Analysis Parameters:")
+    print("⚙️  Analysis Parameters:")
     print(f"  MA windows: {ma_windows}")
     print(f"  Thresholds: {thresholds}")
     print(f"  Top-N display: {display_n}")
@@ -684,11 +760,11 @@ def analyze_run(
     # Comparison tables
     ma_comparison = SummaryGenerator.create_ma_comparison_table(summary_df)
     ma_comparison.to_csv(run_path / 'ma_window_comparison.csv', index=False)
-    print(f"  ✅ Saved ma_window_comparison.csv")
+    print("  ✅ Saved ma_window_comparison.csv")
     
     threshold_comparison = SummaryGenerator.create_threshold_comparison_table(summary_df)
     threshold_comparison.to_csv(run_path / 'threshold_comparison.csv', index=False)
-    print(f"  ✅ Saved threshold_comparison.csv")
+    print("  ✅ Saved threshold_comparison.csv")
     
     # Determine display count
     if n_display is None:
@@ -742,26 +818,34 @@ def analyze_run(
         
         # ROC curves for best variant
         visualizer.plot_roc_curves(processed_results, best_variant)
-        print(f"  ✅ Generated ROC curves")
+        print("  ✅ Generated ROC curves")
         
         # Threshold analysis for different MA windows
         for ma_win in ma_windows:
             visualizer.plot_threshold_sensitivity_analysis(
                 processed_results, ma_win, sampling_period=sampling_period
             )
-        print(f"  ✅ Generated threshold sensitivity analyses")
+        print("  ✅ Generated threshold sensitivity analyses")
         
         # MA window comparison for different thresholds
         for thr in [0.4, 0.5, 0.6]:
             visualizer.plot_ma_window_comparison(processed_results, threshold=thr)
-        print(f"  ✅ Generated MA window comparisons")
+        print("  ✅ Generated MA window comparisons")
         
         # Pareto frontier
         visualizer.plot_pareto_frontier(summary_df)
-        print(f"  ✅ Generated Pareto frontier")
+        print("  ✅ Generated Pareto frontier")
+
+        # Preictal Prediction Plot
+        visualizer.plot_preical_preds(processed_results)
+        print("  ✅ Preictal Prediction Plot")
+
+        # Probability Distribution
+        visualizer.plot_probability_distributions(processed_results)
+        print("  ✅ Probability Distribution")
     
     print(f"\n{'='*80}")
-    print(f"✨ ANALYSIS COMPLETE!")
+    print("✨ ANALYSIS COMPLETE!")
     print(f"{'='*80}")
     print(f"📁 Results saved to: {run_dir}")
     print(f"📊 Visualizations saved to: {run_path / 'visualizations'}")
