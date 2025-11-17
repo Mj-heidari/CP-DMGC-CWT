@@ -260,7 +260,7 @@ class Visualizer:
     
     def plot_roc_curves(self, processed_results: List[Dict], variant_name: str):
         """Plot ROC curves for a specific variant across all folds"""
-        plt.figure(figsize=(10, 8))
+        plt.figure(figsize=(6, 5))
         
         has_data = False
         for fold_result in processed_results:
@@ -292,7 +292,7 @@ class Visualizer:
         plt.title(f'ROC Curves: {variant_name}')
         plt.legend()
         plt.tight_layout()
-        plt.savefig(self.viz_dir / f'roc_{variant_name}.png', bbox_inches='tight')
+        plt.savefig(self.viz_dir / f'roc_{variant_name}.png', bbox_inches='tight', dpi=300)
         plt.close()
     
     def plot_threshold_sensitivity_analysis(
@@ -363,54 +363,114 @@ class Visualizer:
         plt.savefig(self.viz_dir / f'threshold_analysis_ma{ma_window}.png', bbox_inches='tight')
         plt.close()
     
-    def plot_ma_window_comparison(self, processed_results: List[Dict], threshold: float):
-        """Compare performance across different MA windows"""
+    def plot_ma_window_comparison(self, processed_results: List[Dict], thresholds: List[float]):
         windows = [1, 3, 5, 7, 10]
-        
-        metrics_by_window = {w: {'auc': [], 'sens': [], 'fpr': []} for w in windows}
-        
-        for window in windows:
-            variant_name = f"ma_{window}_thr_{threshold:.2f}"
-            
-            for fold_result in processed_results:
-                if variant_name in fold_result['variants']:
-                    metrics = fold_result['variants'][variant_name]['metrics']
-                    if not np.isnan(metrics['auc']):
-                        metrics_by_window[window]['auc'].append(metrics['auc'])
-                    if not np.isnan(metrics['sensitivity']):
-                        metrics_by_window[window]['sens'].append(metrics['sensitivity'])
-                    if not np.isnan(metrics['fpr_per_hour']):
-                        metrics_by_window[window]['fpr'].append(metrics['fpr_per_hour'])
-        
-        fig, axes = plt.subplots(1, 3, figsize=(18, 5))
-        
-        mean_aucs = [np.mean(metrics_by_window[w]['auc']) if metrics_by_window[w]['auc'] else np.nan for w in windows]
-        std_aucs = [np.std(metrics_by_window[w]['auc']) if metrics_by_window[w]['auc'] else 0 for w in windows]
-        axes[0].errorbar(windows, mean_aucs, yerr=std_aucs, marker='o', capsize=5, linewidth=2, markersize=8)
-        axes[0].set_xlabel('MA Window Size', fontsize=12)
-        axes[0].set_ylabel('AUC', fontsize=12)
-        axes[0].set_title('AUC vs MA Window', fontsize=14)
-        axes[0].grid(True, alpha=0.3)
-        
-        mean_sens = [np.mean(metrics_by_window[w]['sens']) if metrics_by_window[w]['sens'] else np.nan for w in windows]
-        std_sens = [np.std(metrics_by_window[w]['sens']) if metrics_by_window[w]['sens'] else 0 for w in windows]
-        axes[1].errorbar(windows, mean_sens, yerr=std_sens, marker='o', capsize=5, linewidth=2, markersize=8)
-        axes[1].set_xlabel('MA Window Size', fontsize=12)
-        axes[1].set_ylabel('Sensitivity', fontsize=12)
-        axes[1].set_title('Sensitivity vs MA Window', fontsize=14)
-        axes[1].grid(True, alpha=0.3)
-        
-        mean_fprs = [np.mean(metrics_by_window[w]['fpr']) if metrics_by_window[w]['fpr'] else np.nan for w in windows]
-        std_fprs = [np.std(metrics_by_window[w]['fpr']) if metrics_by_window[w]['fpr'] else 0 for w in windows]
-        axes[2].errorbar(windows, mean_fprs, yerr=std_fprs, marker='o', capsize=5, linewidth=2, markersize=8)
-        axes[2].set_xlabel('MA Window Size', fontsize=12)
-        axes[2].set_ylabel('FPR/hour', fontsize=12)
-        axes[2].set_title('FPR/hour vs MA Window', fontsize=14)
-        axes[2].grid(True, alpha=0.3)
-        
-        plt.suptitle(f'MA Window Comparison: threshold={threshold}', fontsize=16)
+
+        # Collect all rows
+        rows = []
+
+        for thr in thresholds:
+            for window in windows:
+                variant_name = f"ma_{window}_thr_{thr:.2f}"
+                aucs, sens, fprs = [], [], []
+
+                for fold_result in processed_results:
+                    if variant_name in fold_result['variants']:
+                        m = fold_result['variants'][variant_name]['metrics']
+                        aucs.append(m['auc'])
+                        sens.append(m['sensitivity'])
+                        fprs.append(m['fpr_per_hour'])
+
+                rows.append([
+                    thr,
+                    window,
+                    np.mean(aucs) if aucs else np.nan,
+                    np.mean(sens) if sens else np.nan,
+                    np.mean(fprs) if fprs else np.nan
+                ])
+
+        df = pd.DataFrame(rows, columns=["threshold", "window", "auc", "sensitivity", "fpr"])
+
+
+        # === Helper: small x-shift to avoid overlapping points ===
+        jitter_amount = 0.15
+        thr_list = list(thresholds)
+        thr_offsets = {
+            thr: (i - (len(thresholds)-1)/2) * jitter_amount
+            for i, thr in enumerate(thr_list)
+        }
+
+
+        # ---------------------------------------------------------
+        # FIGURE 1: AUC
+        # ---------------------------------------------------------
+        plt.figure(figsize=(6, 5))
+        for thr in thresholds:
+            df_thr = df[df["threshold"] == thr]
+            xs = df_thr["window"].values + thr_offsets[thr]
+            plt.plot(xs, df_thr["auc"], marker="o", label=f"thr={thr:.2f}")
+
+        plt.xlabel("Window Size")
+        plt.ylabel("AUC")
+        plt.title("AUC vs Window Size")
+        plt.grid(True, linestyle= '--')
+        plt.xticks(windows)  # explicit x ticks
+        plt.legend()
         plt.tight_layout()
-        plt.savefig(self.viz_dir / f'ma_comparison_thr{threshold:.2f}.png', bbox_inches='tight')
+        plt.savefig(self.viz_dir / "AUC_vs_window.png", bbox_inches="tight", dpi=300)
+        plt.close()
+
+
+        # ---------------------------------------------------------
+        # FIGURE 2: Sensitivity
+        # ---------------------------------------------------------
+        plt.figure(figsize=(6, 5))
+        for thr in thresholds:
+            df_thr = df[df["threshold"] == thr]
+            xs = df_thr["window"].values + thr_offsets[thr]
+            plt.plot(xs, df_thr["sensitivity"], marker="o", label=f"thr={thr:.2f}")
+
+        plt.xlabel("Window Size")
+        plt.ylabel("Sensitivity")
+        plt.ylim(-0.05, 1.05)
+        plt.title("Sensitivity vs Window Size")
+        plt.grid(True, linestyle= '--')
+        plt.xticks(windows) 
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig(self.viz_dir / "Sensitivity_vs_window.png", bbox_inches="tight", dpi=300)
+        plt.close()
+
+
+        # ---------------------------------------------------------
+        # FIGURE 3: FPR (log scale, zero-indicating)
+        # ---------------------------------------------------------
+        plt.figure(figsize=(6, 5))
+
+        for thr in thresholds:
+            df_thr = df[df["threshold"] == thr]
+            xs = df_thr["window"].values + thr_offsets[thr]
+            # Plot all points normally
+            plt.plot(xs, df_thr["fpr"], marker="o", linewidth=2, label=f"thr={thr:.2f}")
+
+        plt.xlabel("Window Size")
+        plt.ylabel("FPR/hour")
+        plt.yscale("symlog", linthresh=0.01)
+        plt.title("FPR/hour vs Window Size")
+
+        # Add a custom ytick indicating zero
+        ticks = [0, 0.05, 0.5, 5, 50, 200]
+        ticks_names = [str(t) for t in ticks]
+
+        plt.yticks(ticks, ticks_names, rotation=90)
+
+        # Optional visual cue that bottom tick is artificial
+
+        plt.grid(True, which="both", linestyle= '--')
+        plt.xticks(windows)
+        plt.legend(title="Threshold")
+        plt.tight_layout()
+        plt.savefig(self.viz_dir / "FPR_vs_window.png", bbox_inches="tight", dpi=300)
         plt.close()
     
     def plot_pareto_frontier(self, summary_df: pd.DataFrame):
@@ -828,8 +888,7 @@ def analyze_run(
         print("  ✅ Generated threshold sensitivity analyses")
         
         # MA window comparison for different thresholds
-        for thr in [0.4, 0.5, 0.6]:
-            visualizer.plot_ma_window_comparison(processed_results, threshold=thr)
+        visualizer.plot_ma_window_comparison(processed_results, thresholds=thresholds)
         print("  ✅ Generated MA window comparisons")
         
         # Pareto frontier
