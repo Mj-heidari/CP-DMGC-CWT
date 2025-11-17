@@ -3,15 +3,15 @@
 # Script to run training for all subjects with EEGWaveNet, CE-stSENet, and MB_dMGC_CWTFFNet
 
 DATASET_DIR="data/BIDS_CHB-MIT"
-EPOCHS=20
-BATCH_SIZE=32
-LR=1e-3
+EPOCHS=30
+BATCH_SIZE=64
+LR=5e-4
 SUFFIX="zscore_F_T"
 INNER_CV_MODE="stratified"
 
 # Define subjects (CHB-MIT has subjects 01-24) 
 # - subject 12 is excluded due to incosistant channel naming
-SUBJECTS=(01 02 03 04 05 06 07 08 09 10 11 13 14 15 16 17 18 19 20 21 22 23 24)
+SUBJECTS=(01 02 03 04 05 06 07 08 09 10 13 14 15 16 17 18 19 20 22 23 24)
 
 # Define models
 MODELS=(EEGWaveNet CE-stSENet MB_dMGC_CWTFFNet)
@@ -58,14 +58,14 @@ echo "================================================================"
 echo "All training completed"
 echo "================================================================"
 echo ""
-echo "Now running analyze_results2.py for all runs..."
+echo "Now running analyze_results3.py for all runs..."
 echo ""
 
 # Analyze results for all runs
 for RUN_DIR in runs/run*; do
     if [ -d "$RUN_DIR" ]; then
         echo "Analyzing $RUN_DIR..."
-        python analyze_results2.py --run_dir "$RUN_DIR"
+        python analyze_results3.py --run_dir "$RUN_DIR"
     fi
 done
 

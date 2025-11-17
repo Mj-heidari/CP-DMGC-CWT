@@ -9,7 +9,7 @@ set SUFFIX=zscore_F_T
 set INNER_CV_MODE=stratified
 
 REM Define subjects (CHB-MIT has subjects 01-24)
-set SUBJECTS=01 02 03 04 05 06 07 08 09 10 11 13 14 15 16 17 18 19 20 21 22 23 24
+set SUBJECTS=01 02 03 04 05 06 07 08 09 10 13 14 15 16 17 18 19 20 22 23 24
 
 REM Define models
 set MODELS=EEGWaveNet CE-stSENet MB_dMGC_CWTFFNet
@@ -47,13 +47,13 @@ echo ================================================================
 echo All training completed
 echo ================================================================
 echo.
-echo Now running analyze_results2.py for all runs...
+echo Now running analyze_results3.py for all runs...
 echo.
 
 REM Analyze results for all runs
 for /d %%D in (runs\run*) do (
     echo Analyzing %%D...
-    python analyze_results2.py --run_dir "%%D"
+    python analyze_results3.py --run_dir "%%D"
 )
 
 echo.
