@@ -5,9 +5,9 @@ class InstanceNormTransform:
     def __init__(self, eps: float = 1e-5):
         self.eps = eps
 
-    def __call__(self, x: np.ndarray | torch.Tensor) -> np.ndarray:
-        if isinstance(x, np.ndarray):
-            x = torch.from_numpy(x)
+    def __call__(self, eeg: np.ndarray | torch.Tensor) -> np.ndarray:
+        if isinstance(eeg, np.ndarray):
+            x = torch.from_numpy(eeg)
 
         # Normalize per channel across time (common in EEG)
         # shape expected: (channels, time)
