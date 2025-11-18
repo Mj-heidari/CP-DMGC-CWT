@@ -465,7 +465,7 @@ if __name__ == "__main__":
             sampling_rate=128,
             normalize_by_lowbands=False,
         )
-        offline_transforms = [filter_bank]
+        offline_transforms.append(filter_bank)
     
     if args.model == 'EEGWaveNet':
         from transforms.signal.wavletfilterbank import WaveletFilterBank
@@ -473,7 +473,7 @@ if __name__ == "__main__":
             fs=128,
             combine_mode="concat_time",
         )
-        offline_transforms = [filter_bank]
+        offline_transforms.append(filter_bank)
 
     dataset = CHBMITDataset(
         args.dataset_dir,

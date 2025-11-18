@@ -378,7 +378,7 @@ if __name__ == "__main__":
     if args.model == 'FBMSNet':
         from models.FBMSNet import filterBank
         filter_bank = filterBank([[4,8],[8,12],[12,16],[16,20],[20,24],[24,28],[28,32],[32,36],[36,40]], 128)
-        offline_transforms = [filter_bank]
+        offline_transforms.append(filter_bank)
 
     if args.model == 'EEGBandClassifier':
         from transforms.signal.filterbank import FilterBank
@@ -393,7 +393,7 @@ if __name__ == "__main__":
             sampling_rate=128,
             normalize_by_lowbands=True,
         )
-        offline_transforms = [filter_bank]
+        offline_transforms.append(filter_bank)
         
     if args.model == 'EEGWaveNet':
         from transforms.signal.wavletfilterbank import WaveletFilterBank
@@ -401,7 +401,7 @@ if __name__ == "__main__":
             fs=128,
             combine_mode="concat_time",
         )
-        offline_transforms = [filter_bank]
+        offline_transforms.append(filter_bank)
 
     dataset = CHBMITDataset(
         args.dataset_dir,
