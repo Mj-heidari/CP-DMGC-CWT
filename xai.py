@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import argparse
 import mne
+from tqdm import tqdm
 
 from captum.attr import IntegratedGradients
 from models.EEGWaveNet import EEGWaveNet
@@ -55,10 +56,6 @@ class XAI_Analyzer:
         positions_norm = 2 * (positions - pos_min) / (pos_max - pos_min) - 1
         self.positions_norm = positions_norm / 14
 
-    # -------------------------------------------------------------------------
-    # Helper methods
-    # -------------------------------------------------------------------------
-
     def get_subj_id(self):
         with open(self.dir / "config.json", "r") as f:
             config_data = json.load(f)
@@ -83,19 +80,12 @@ class XAI_Analyzer:
     def load_model(self,fold):
         model = EEGWaveNet()
         model_path = self.dir / f"checkpoints/best_model_outer{fold}_inner1.pth"
-        model.load_state_dict(torch.load(model_path, map_location="cpu"))
+        model.load_state_dict(torch.load(model_path, map_location="cuda"))
         model.eval()
-        return model
-
-    # -------------------------------------------------------------------------
-    # Computation
-    # -------------------------------------------------------------------------
+        return model.cuda()
 
     def compute_intergrated_gradient(self, normalize=True):
-        
-
-        class0_attr = []
-        class1_attr = []
+        attrs = []
         for fold, (_, test_dataset) in enumerate(self.splits):
             try:
                 self.model = self.load_model(fold+1)
@@ -110,85 +100,70 @@ class XAI_Analyzer:
 
             ig = IntegratedGradients(model_forward)
             dataloader = UnderSampledDataLoader(test_dataset, batch_size=64)
-            for X, y in dataloader:
-                X = X.to(torch.float32)
-                y = y.numpy()
+
+            for X, y in tqdm(dataloader, desc=f"Fold {fold+1} IG Computation"):
+                X = X.to(torch.float32).cuda()
+                y = y.cuda()
+                interictal_segments = X[y==0]
 
                 for i in range(len(X)):
+                    if y[i] == 0:
+                        continue  # only compute IG for class 1
+
+                    j = torch.randint(len(interictal_segments), (1,)).item()
                     x = X[i:i+1].requires_grad_(True)
-                    label = y[i]
+                    baseline = interictal_segments[j:j+1]
 
                     attr, _ = ig.attribute(
-                        x, baselines=torch.zeros_like(x), return_convergence_delta=True
+                        x, baselines=baseline, return_convergence_delta=True
                     )
-                    attr = attr.detach().cpu().numpy()[0]  # (C, T)
+                    attrs.append(attr[0].detach().cpu().numpy())
+    
+        attrs = np.array(attrs)
 
-                    if label == 0:
-                        class0_attr.append(attr)
-                    else:
-                        class1_attr.append(attr)
-
-        class0_attr = np.mean(class0_attr, axis=0) if class0_attr else None
-        class1_attr = np.mean(class1_attr, axis=0) if class1_attr else None
-
-        def normalize_attr(attr):
-            attr = np.abs(attr)
-            return attr / (attr.max() + 1e-8)
-
-        if normalize:
-            if class0_attr is not None:
-                class0_attr = normalize_attr(class0_attr)
-            if class1_attr is not None:
-                class1_attr = normalize_attr(class1_attr)
-
-        return class0_attr, class1_attr
-
-    # -------------------------------------------------------------------------
-    # Plots
-    # -------------------------------------------------------------------------
-
-    def plot_band_attribution(self, attrs, cls):
         start = 0
-        component_means = []
+        component_attrs = []
         for length in self.component_lengths:
             end = start + length
-            component_means.append(np.mean(np.abs(attrs[:, start:end])))
+            component = attrs[:, :, start:end]
+            component_attrs.append(np.mean(component, axis=(0, 2)))  # (C,)
             start = end
 
+        component_attrs = np.array(component_attrs)  # (n_components, C)
+        component_attrs = np.abs(component_attrs)
+        component_mean_attr = np.transpose(component_attrs, (1, 0))  # (C, n_components)  
+
+        if normalize:
+            component_mean_attr = ((component_mean_attr - component_mean_attr.min()) 
+                                   / (component_mean_attr.max() - component_mean_attr.min() + 1e-8))
+
+        return component_mean_attr
+
+    def plot_band_attribution(self, components_mean):
         plt.figure(figsize=(6, 4))
-        plt.bar(self.components, component_means)
-        plt.title(f"Integrated Gradients per Wavelet Component (Class {cls})")
+        plt.bar(self.components, components_mean.mean(axis=0))
+        plt.title("Integrated Gradients per Wavelet Component")
         plt.xlabel("Wavelet Component")
         plt.ylabel("Attribution")
         plt.tight_layout()
-        plt.savefig(self.dir / f"band_attributes_class{cls}.png", dpi=300)
+        plt.savefig(self.dir / "band_attributes.png", dpi=300)
         plt.close()
 
-    def plot_pre_channel_band_attribution(self, attrs, cls):
-        channel_component_importances = []
-        start = 0
-        for length in self.component_lengths:
-            end = start + length
-            comp = np.mean(np.abs(attrs[:, start:end]), axis=1)
-            channel_component_importances.append(comp)
-            start = end
-
-        data = np.stack(channel_component_importances, axis=1)
-
+    def plot_pre_channel_band_attribution(self, components_mean):
         fig, ax = plt.subplots(figsize=(10, 6))
-        im = ax.imshow(data, aspect="auto", cmap="viridis")
+        im = ax.imshow(components_mean, aspect="auto", cmap="viridis")
         ax.set_xticks(range(self.n_components))
         ax.set_xticklabels(self.components)
         ax.set_yticks(range(len(self.channels)))
         ax.set_yticklabels(self.channels)
-        ax.set_title(f"Channel × Component Attribution (Class {cls})")
+        ax.set_title("Channel × Component Attribution")
         fig.colorbar(im, ax=ax)
-        plt.savefig(self.dir / f"band_channels_attributions_class{cls}.png", dpi=300)
+        plt.savefig(self.dir / "band_channels_attributions.png", dpi=300)
         plt.close()
 
-    def plot_topo_band_attribution(self, attrs, cls):
+    def plot_topo_band_attribution(self, components_mean):
         # ---------------- LOW FREQUENCY ----------------
-        low_attr = np.mean(np.abs(attrs[:, :500]), axis=1)
+        low_attr = np.mean(np.abs(components_mean[:, 2:]), axis=1)
 
         fig, ax = plt.subplots(figsize=(6, 6))
         im, cn = mne.viz.plot_topomap(
@@ -196,15 +171,16 @@ class XAI_Analyzer:
             pos=self.positions_norm,
             names=self.channels,
             outlines="head",
+            cmap='jet',
             axes=ax,
             show=False
         )
-        ax.set_title(f"Topomap Low-frequency (Class {cls})")
-        fig.savefig(self.dir / f"topograph_low_freq_class{cls}.png", dpi=300)
+        ax.set_title("Topomap Low-frequency")
+        fig.savefig(self.dir / "topograph_low_freq.png", dpi=300)
         plt.close(fig)
 
         # ---------------- HIGH FREQUENCY ----------------
-        high_attr = np.mean(np.abs(attrs[:, 500:]), axis=1)
+        high_attr = np.mean(np.abs(components_mean[:, :2]), axis=1)
 
         fig, ax = plt.subplots(figsize=(6, 6))
         im, cn = mne.viz.plot_topomap(
@@ -212,17 +188,15 @@ class XAI_Analyzer:
             pos=self.positions_norm,
             names=self.channels,
             outlines="head",
+            cmap='jet',
             axes=ax,
             show=False
         )
-        ax.set_title(f"Topomap High-frequency (Class {cls})")
-        fig.savefig(self.dir / f"topograph_high_freq_class{cls}.png", dpi=300)
+        ax.set_title("Topomap High-frequency")
+        fig.savefig(self.dir / "topograph_high_freq.png", dpi=300)
         plt.close(fig)
 
 
-# =============================================================================
-# Main
-# =============================================================================
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", type=str, required=True,
@@ -239,14 +213,9 @@ if __name__ == "__main__":
         print(f"Processing: {run_dir}")
 
         analyzer = XAI_Analyzer(run_dir)
-        c0, c1 = analyzer.compute_intergrated_gradient()
+        components_means = analyzer.compute_intergrated_gradient()
 
-        if c0 is not None:
-            analyzer.plot_band_attribution(c0, cls=0)
-            analyzer.plot_pre_channel_band_attribution(c0, cls=0)
-            analyzer.plot_topo_band_attribution(c0, cls=0)
-
-        if c1 is not None:
-            analyzer.plot_band_attribution(c1, cls=1)
-            analyzer.plot_pre_channel_band_attribution(c1, cls=1)
-            analyzer.plot_topo_band_attribution(c1, cls=1)
+        analyzer.plot_band_attribution(components_means)
+        analyzer.plot_pre_channel_band_attribution(components_means)
+        analyzer.plot_topo_band_attribution(components_means)
+        
