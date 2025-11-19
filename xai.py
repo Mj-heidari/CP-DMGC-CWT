@@ -112,6 +112,8 @@ class XAI_Analyzer:
 
                     j = torch.randint(len(interictal_segments), (1,)).item()
                     x = X[i:i+1].requires_grad_(True)
+                    if (model_forward(x).item() < 0.4):
+                        continue
                     baseline = interictal_segments[j:j+1]
 
                     attr, _ = ig.attribute(
