@@ -359,10 +359,6 @@ def infer_preictal_interactal(
     return raw
 
 
-import numpy as np
-import mne
-from typing import Set, Tuple
-
 def extract_segments_with_labels_bids(
     raw: mne.io.Raw,
     segment_sec: float = 5.0,
