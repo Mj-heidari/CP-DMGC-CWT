@@ -4,13 +4,13 @@ import torch.nn.functional as F
 
 class WaveletBranch(nn.Module):
     """Processes a single wavelet component (detail or approximation)."""
-    def __init__(self, n_channels, kernel_t_len, n_output_features=16, pool_kernel=4, pool_stride=4):
+    def __init__(self, n_channels, kernel_t_len, n_output_features=16, n_temp_features=16 ,pool_kernel=4, pool_stride=4):
         super().__init__()
         self.temp_conv = nn.Conv2d(
-            1, 16, kernel_size=(1, kernel_t_len), padding=(0, kernel_t_len//2), bias=False
+            1, n_temp_features, kernel_size=(1, kernel_t_len), padding=(0, kernel_t_len//2), bias=False
         )
         self.channel_conv = nn.Conv2d(
-            16, n_output_features, kernel_size=(n_channels, 1), bias=False
+            n_temp_features, n_output_features, kernel_size=(n_channels, 1), bias=False
         )
         self.bn = nn.BatchNorm2d(n_output_features)
         self.pool = nn.MaxPool2d(kernel_size=(1, pool_kernel), stride=(1, pool_stride))
@@ -33,7 +33,7 @@ class WaveletBranch(nn.Module):
 class EEGWaveletEmbeddingNet(nn.Module):
     """Handles multi-resolution wavelet components and fuses their embeddings."""
     def __init__(self, n_channels=18, component_lengths=(320, 160, 80, 40, 40),
-                 kernel_t_lens=None, n_output_features=16):
+                 kernel_t_lens=None, n_output_features=16, fuse_output_features=32, n_temp_features=16):
         super().__init__()
         self.n_channels = n_channels
         self.component_lengths = component_lengths
@@ -47,12 +47,12 @@ class EEGWaveletEmbeddingNet(nn.Module):
         # One branch per wavelet component
         self.branches = nn.ModuleList([
             WaveletBranch(n_channels, kernel_t_len=kernel_t_lens[i],
-                          n_output_features=n_output_features)
+                          n_output_features=n_output_features, n_temp_features=n_temp_features)
             for i in range(self.n_components)
         ])
 
         # Fuse features across scales (time dimension collapsed)
-        self.fuse_conv = nn.Conv2d(n_output_features, 32, kernel_size=(1, self.n_components))
+        self.fuse_conv = nn.Conv2d(n_output_features, fuse_output_features, kernel_size=(1, self.n_components))
 
     def forward(self, x):
         """
@@ -83,20 +83,35 @@ class EEGWaveletEmbeddingNet(nn.Module):
         return fused
 
 class EEGWaveNet(nn.Module):
-    def __init__(self, n_classes=2):
+    def __init__(self, n_classes=2, model_size: str  = 'medium'):
         super().__init__()
+        if model_size == 'tiny':
+            n_output_features = 4
+            n_mlp_units = 8
+            fuse_output_features = 8
+            n_temp_features = 2
+        elif model_size == 'medium':
+            n_output_features = 16
+            n_mlp_units = 32
+            fuse_output_features = 32
+            n_temp_features = 16
+        else:
+            raise ValueError("model_size must be 'tiny' or 'medium'")
+
         self.embedding = EEGWaveletEmbeddingNet(
             n_channels=18,
             component_lengths=(320, 160, 80, 40, 40),
-            n_output_features=16
+            n_output_features=n_output_features,
+            fuse_output_features=fuse_output_features,
+            n_temp_features=n_temp_features
         )
 
         self.classifier = nn.Sequential(
-            nn.Linear(32, 32),
+            nn.Linear(n_mlp_units, n_mlp_units),
             nn.ReLU(),
             nn.Dropout(0.1),
-            nn.BatchNorm1d(32),
-            nn.Linear(32, n_classes)
+            nn.BatchNorm1d(n_mlp_units),
+            nn.Linear(n_mlp_units, n_classes)
         )
 
     def forward(self, x):
@@ -110,7 +125,7 @@ if __name__ == "__main__":
     from torchinfo import summary
 
     torch.manual_seed(0)
-    model = EEGWaveNet().cuda()
+    model = EEGWaveNet(model_size='tiny').cuda()
 
     debugger = NetworkDebugger(model)
     debugger.register_hooks()

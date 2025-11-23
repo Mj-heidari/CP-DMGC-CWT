@@ -311,5 +311,11 @@ def get_builder(model: str = "CE-stSENet"):
                 EEGWaveNet
             )
             return builder
+        case "EEGWaveNet-tiny":
+            builder = model_builder(
+                EEGWaveNet,
+                model_size='tiny'
+            )
+            return builder
         case _:
             raise NotImplementedError

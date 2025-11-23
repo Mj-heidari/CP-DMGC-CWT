@@ -395,7 +395,7 @@ if __name__ == "__main__":
         )
         offline_transforms.append(filter_bank)
         
-    if args.model == 'EEGWaveNet':
+    if args.model == 'EEGWaveNet' or args.model == 'EEGWaveNet-tiny':
         from transforms.signal.wavletfilterbank import WaveletFilterBank
         filter_bank = WaveletFilterBank(
             fs=128,
