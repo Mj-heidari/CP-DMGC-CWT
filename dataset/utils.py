@@ -433,6 +433,8 @@ def extract_segments_with_labels_bids(
         ann_counter[desc] += 1
         block_id = f"{desc}_{ann_counter[desc]}"
 
+        if len(epochs) < 20:
+            continue
         # Collect
         X.append(epochs.get_data())
         y.extend([desc] * len(epochs))
