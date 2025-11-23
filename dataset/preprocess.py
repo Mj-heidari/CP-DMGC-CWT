@@ -28,6 +28,7 @@ def process_chbmit_bids_dataset(
     plot_psd: bool = False,
     show_statistics: bool = True,
     subj_nums: Optional[List[int]] = None,
+    oversample_factor: int = 1,
 ):
     """
     Process all subjects in CHB-MIT (BIDS format) dataset and save per-subject segments and labels.
@@ -93,7 +94,7 @@ def process_chbmit_bids_dataset(
             plt.show()
 
         X, y, group_ids, event_stats = extract_segments_with_labels_bids(
-            raw_all, segment_sec=5, overlap=0.0, keep_labels={"preictal", "interictal"}, preictal_oversample_factor=1
+            raw_all, segment_sec=5, overlap=0.0, keep_labels={"preictal", "interictal"}, preictal_oversample_factor=oversample_factor
         )
 
         if show_statistics:
@@ -121,7 +122,7 @@ def process_chbmit_bids_dataset(
             X, scales = scale_to_uint16(X)
             np.savez_compressed(
                 session_path
-                + f"/eeg/processed_segments_{str(normalization_method)}_{str(apply_ica)[0]}_{str(apply_filter)[0]}_uint16.npz",
+                + f"/eeg/processed_segments_{str(normalization_method)}_{str(apply_ica)[0]}_{str(apply_filter)[0]}_{str(oversample_factor)}_uint16.npz",
                 X=X,
                 y=y,
                 group_ids=group_ids,
@@ -131,7 +132,7 @@ def process_chbmit_bids_dataset(
             X = X.astype(np.float32)
             np.savez_compressed(
                 session_path
-                + f"/eeg/processed_segments_{str(normalization_method)}_{str(apply_ica)[0]}_{str(apply_filter)[0]}_float.npz",
+                + f"/eeg/processed_segments_{str(normalization_method)}_{str(apply_ica)[0]}_{str(apply_filter)[0]}_{str(oversample_factor)}_float.npz",
                 X=X,
                 y=y,
                 group_ids=group_ids,
@@ -258,7 +259,14 @@ def parse_args():
         action="store_true",
         help="Build subject-level summary from event stats"
     )
-    
+
+    parser.add_argument(
+        "--preictal_oversample_factor",
+        type=int,
+        default=1,
+        help="Oversampling factor for preictal segments"
+    )
+
     return parser.parse_args()
 
 
@@ -278,6 +286,7 @@ if __name__ == "__main__":
         plot_psd=args.plot_psd,
         show_statistics=not args.no_statistics,
         subj_nums=args.subjects,
+        oversample_factor=args.preictal_oversample_factor,
     )
     
     if args.build_summary:
