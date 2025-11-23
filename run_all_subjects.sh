@@ -46,30 +46,26 @@ for MODEL in "${MODELS[@]}"; do
             --inner_cv_mode "$INNER_CV_MODE"
         
         if [ $? -ne 0 ]; then
-            echo "ERROR: Training failed for $MODEL on subject $SUBJECT"
+            echo "ERROR: Training failed for $MODEL on subject $SUBJECT. Skipping analysis."
         else
             echo "SUCCESS: Completed training $MODEL for subject $SUBJECT"
+            
+            # --- Analysis Step Starts Here ---
+            
+            # Find the most recently created run directory. 
+            # This relies on the convention: runs/runX_TIMESTAMP.
+            # Using 'ls -t' sorts by modification time (newest first).
+            # The '2>/dev/null' suppresses errors if runs/ doesn't exist yet.
+            LATEST_RUN_DIR=$(ls -td runs/run* 2>/dev/null | head -n 1)
+
+            if [ -d "$LATEST_RUN_DIR" ]; then
+                echo "--> Analyzing latest run: $LATEST_RUN_DIR"
+                python analyze_results3.py --run_dir "$LATEST_RUN_DIR"
+                echo "--> Analysis complete for subject $SUBJECT"
+            else
+                echo "WARNING: Could not find a new run directory for analysis."
+            fi
+            # --- Analysis Step Ends Here ---
         fi
     done
 done
-
-echo ""
-echo "================================================================"
-echo "All training completed"
-echo "================================================================"
-echo ""
-echo "Now running analyze_results3.py for all runs..."
-echo ""
-
-# Analyze results for all runs
-for RUN_DIR in runs/run*; do
-    if [ -d "$RUN_DIR" ]; then
-        echo "Analyzing $RUN_DIR..."
-        python analyze_results3.py --run_dir "$RUN_DIR"
-    fi
-done
-
-echo ""
-echo "================================================================"
-echo "All analyses completed!"
-echo "================================================================"
