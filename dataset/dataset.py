@@ -69,6 +69,14 @@ class CHBMITDataset(Dataset):
         self.X = X.astype(np.float32)
         self.group_ids = group_ids
 
+        self.local_index = np.zeros(len(self.group_ids), dtype=int)
+
+        unique_groups = np.unique(self.group_ids)
+        for g in unique_groups:
+            idx = np.where(self.group_ids == g)[0]   # global indices
+            local = np.arange(len(idx))              # 0,1,2,...
+            self.local_index[idx] = local            # assign in-place
+
         # Apply offline transforms once
         for transform in offline_transforms or []:
             transformed_X = []
@@ -107,6 +115,7 @@ class SubsetWithInfo(Subset):
 
         self.y = self.base_dataset.y[self.base_indices]
         self.group_ids = self.base_dataset.group_ids[self.base_indices]
+        self.local_index = self.base_dataset.local_index[self.base_indices]
 
     def get_class_indices(self):
         """Return indices for each class within this subset"""
@@ -118,7 +127,7 @@ class SubsetWithInfo(Subset):
 class UnderSampledDataLoader:
     """Custom DataLoader that undersamples interictal data each epoch"""
     
-    def __init__(self, dataset, batch_size=32, shuffle=True):
+    def __init__(self, dataset: SubsetWithInfo, batch_size=32, shuffle=True):
         self.dataset = dataset
         self.batch_size = batch_size
         self.shuffle = shuffle
@@ -178,13 +187,14 @@ class UnderSampledDataLoader:
             batch_indices = self.all_indices[i:i + self.batch_size]
             batch_data = []
             batch_labels = []
-            
+            batch_local_indices = []
             for idx in batch_indices:
                 data, label = self.dataset[idx]
                 batch_data.append(data)
                 batch_labels.append(label)
+                batch_local_indices.append(torch.tensor(self.dataset.local_index[idx]))
             
-            yield torch.stack(batch_data), torch.stack(batch_labels)
+            yield torch.stack(batch_data), torch.stack(batch_labels), torch.stack(batch_local_indices)
     
     def __len__(self):
         return (len(self.all_indices) + self.batch_size - 1) // self.batch_size
@@ -226,10 +236,12 @@ class MilDataloader:
         for group_inds in self.preictal_indices_grouped.values():
             inds = np.array(group_inds)
             np.random.shuffle(inds)
+            local_indices = self.dataset.local_index[inds]
             n_bags = len(inds) // self.bag_size
             if n_bags > 0:
                 bags = np.array_split(inds[: n_bags * self.bag_size], n_bags)
-                preictal_bags.extend([(b, 1) for b in bags])
+                bag_local_indices = np.array_split(local_indices[: n_bags * self.bag_size], n_bags)
+                preictal_bags.extend([(b, 1, bli) for b, bli in zip(bags,bag_local_indices)])
                 total_preictal_bags += n_bags
 
         # --- Build interictal bags (prefer unseen first) ---
@@ -266,9 +278,11 @@ class MilDataloader:
 
         # Split selected indices into bags
         n_bags_inter = len(selected) // self.bag_size
+        local_indices = self.dataset.local_index[selected]
         if n_bags_inter > 0:
             bags = np.array_split(selected[: n_bags_inter * self.bag_size], n_bags_inter)
-            interictal_bags.extend([(b, 0) for b in bags])
+            bag_local_indices = np.array_split(local_indices[: n_bags_inter * self.bag_size], n_bags_inter)
+            interictal_bags.extend([(b, 0, bli) for b, bli in zip(bags,bag_local_indices)])
 
         # --- Combine & shuffle all bags ---
         self.all_bags = preictal_bags + interictal_bags
@@ -280,10 +294,10 @@ class MilDataloader:
         # --- Yield mini-batches of bags ---
         for i in range(0, len(self.all_bags), self.batch_size):
             batch = self.all_bags[i : i + self.batch_size]
-            batch_data, batch_labels = [], []
+            batch_data, batch_labels, batch_local_indices = [], [], []
 
-            for bag_indices, bag_label in batch:
-                bag_data, instance_labels = [], []
+            for bag_indices, bag_label, local_indices in batch:
+                bag_data, instance_labels,  = [], []
                 for idx in bag_indices:
                     x, y = self.dataset[idx]
                     bag_data.append(x)
@@ -291,14 +305,16 @@ class MilDataloader:
 
                 bag_data = torch.stack(bag_data)
                 instance_labels = torch.tensor(instance_labels)
+                local_indices = torch.tensor(local_indices)
 
                 if not torch.all(instance_labels == bag_label):
                     raise ValueError("Mixed labels in bag")
 
                 batch_data.append(bag_data)
                 batch_labels.append(bag_label)
+                batch_local_indices.append(local_indices)
 
-            yield torch.stack(batch_data), torch.tensor(batch_labels)
+            yield torch.stack(batch_data), torch.tensor(batch_labels), torch.stack(batch_local_indices)
 
     def __len__(self):
         return math.ceil(len(self.all_bags) / self.batch_size)
@@ -566,10 +582,14 @@ if __name__ == "__main__":
     # dataloader = MilDataloader(train_dataset, batch_size=16, bag_size=16)
     print(dataloader.__len__())
     print(val_dataset.base_indices[0:30])
-    for batch_data, batch_labels in iter(dataloader):
+    for batch_data, batch_labels, local_indices in iter(dataloader):
+        print("------------start")
         print(batch_data.shape)
         print(batch_labels)
-        break
+        print(local_indices.shape)
+        print(local_indices[batch_labels==1])
+        print("------------end")
+        
     
     print("============ INNER-FOLD DISTRIBUTION CHECK ============")
     from collections import Counter

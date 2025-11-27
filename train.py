@@ -21,17 +21,27 @@ class Trainer:
     def __init__(self, model, device="cuda" if torch.cuda.is_available() else "cpu", run_dir=None):
         self.device = device
         self.model = model.to(self.device)
-        self.criterion = nn.CrossEntropyLoss()
+        self.criterion = nn.CrossEntropyLoss(reduction='none')
         self.run_dir = run_dir
         self.best_val_auc = -1
         self.best_model_path = None
+        self.use_preictal_wighting = False
 
     def train_one_epoch(self, train_loader, optimizer):
         self.model.train()
         total_loss, all_preds, all_labels = 0.0, [], []
 
-        for X, y in tqdm(train_loader, desc="Training", leave=False):
+        for X, y, local_idx in tqdm(train_loader, desc="Training", leave=False):
             X, y = X.to(self.device), y.to(self.device)
+            local_idx = local_idx.to(self.device)
+
+            # base weights = 1
+            wights = torch.ones_like(y, dtype=torch.float)
+
+            if self.use_preictal_wighting:
+                # assume local_idx is already normalized 0..1
+                wights[y == 1] = local_idx[y == 1] / 90
+
 
             optimizer.zero_grad()
             outputs = self.model(X)
@@ -40,6 +50,7 @@ class Trainer:
                 outputs = outputs.unsqueeze(0)
 
             loss = self.criterion(outputs, y)
+            loss = (loss * wights).mean()
             loss.backward()
             optimizer.step()
 
@@ -65,7 +76,7 @@ class Trainer:
                 if outputs.dim() < 2:
                     outputs = outputs.unsqueeze(0)
 
-                loss = self.criterion(outputs, y)
+                loss = self.criterion(outputs, y).mean()
 
                 total_loss += loss.item() * X.size(0)
                 probs = torch.softmax(outputs, dim=1)[:, 1].cpu().numpy()

@@ -46,7 +46,7 @@ class Trainer:
         self.model.train()
         total_loss, all_preds, all_labels = 0.0, [], []
 
-        for X, y in tqdm(train_loader, desc="Training", leave=False):
+        for X, y, _ in tqdm(train_loader, desc="Training", leave=False):
             X, y = X.to(self.device), y.to(self.device)
             optimizer.zero_grad()
 
@@ -123,7 +123,8 @@ class Trainer:
                         total_bag_loss += bag_loss
 
                         # store mean output for metrics
-                        bag_out = torch.sigmoid(outputs[i]).mean(dim=0)
+                        bag_prob = torch.softmax(outputs[i], dim=1)[:, 1] # Get prob of class 1
+                        bag_out = torch.max(bag_prob).unsqueeze(0) # Get max probability
                         bag_outputs.append(bag_out)
 
                     loss = total_bag_loss / B
@@ -135,12 +136,17 @@ class Trainer:
                     loss = self.criterion(bag_outputs, ys)
 
 
-                if len(bag_outputs.shape) == 1:
+                if len(bag_outputs.shape) == 0:
                     bag_outputs = bag_outputs.unsqueeze(0)
  
                 total_loss += loss.item() * X.shape[0]
-                probs = torch.softmax(bag_outputs, dim=1)[:, 1].cpu().numpy()
-                preds = torch.argmax(bag_outputs, dim=1).cpu().numpy()
+
+                if self.use_mil:
+                    probs = bag_outputs.cpu().numpy().flatten()                    
+                    preds = (bag_outputs > 0.5).long().cpu().numpy().flatten() 
+                else:
+                    probs = torch.softmax(bag_outputs, dim=1)[:, 1].cpu().numpy().flatten()
+                    preds = torch.argmax(bag_outputs, dim=1).cpu().numpy().flatten()
 
                 all_probs.extend(probs)
                 all_preds.extend(preds)
