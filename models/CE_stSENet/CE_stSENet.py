@@ -322,3 +322,13 @@ class CE_stSENet(nn.Module):
         cat_f = torch.cat((x1, x2, x3, x4, x5), 1)
         output, decov1= self.conv_classifier(cat_f)
         return output.squeeze()
+
+
+if __name__ == "__main__":
+
+    from torchinfo import summary
+
+    torch.manual_seed(0)
+    model = CE_stSENet(inc=18,class_num=2,si=128).cuda()
+
+    summary(model, (2, 18, 640))
