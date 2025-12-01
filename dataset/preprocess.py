@@ -74,7 +74,7 @@ def process_chbmit_bids_dataset(
                 l_freq=0.5,
                 h_freq=50.0,
                 sos = butter(4, [l_freq, h_freq], btype="bandpass", fs=fs, output="sos")
-                raw._data = sosfiltfilt(sos, raw._data, axis=2)
+                raw._data = sosfiltfilt(sos, raw._data, axis=1)
 
             raw.resample(128, method='polyphase')
             # raw.resample(128, npad="auto")
@@ -100,8 +100,6 @@ def process_chbmit_bids_dataset(
             overlap=0.0,
             keep_labels={"preictal", "interictal"},
             preictal_oversample_factor=oversample_factor,
-            sfreq=128.0,
-            apply_filter=apply_filter,
         )
 
         if show_statistics:
