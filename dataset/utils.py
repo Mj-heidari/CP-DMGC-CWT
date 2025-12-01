@@ -3,7 +3,7 @@ import mne
 from mne.preprocessing import ICA
 from typing import Tuple, List, Set, Optional
 import pandas as pd
-
+from scipy.signal import butter, sosfiltfilt
 
 def preprocess_chbmit(
     raw: mne.io.Raw,
@@ -365,6 +365,10 @@ def extract_segments_with_labels_bids(
     overlap: float = 0.0,
     keep_labels: Set[str] = {"preictal", "interictal"},
     preictal_oversample_factor: float = 1.0,
+    sfreq: float = 128.0,
+    l_freq: float = 0.5,
+    h_freq: float = 50.0,
+    apply_filter: bool = True,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, list[dict]]:
     """
     Segment EEG into fixed-length epochs based on annotations.
@@ -384,6 +388,14 @@ def extract_segments_with_labels_bids(
         Approximate factor by which to increase the number of preictal segments.
         For example, 5.0 means ~5× more segments by using overlap internally.
         Values <= 1.0 disable oversampling.
+    sfreq : float
+        Sampling frequency of the data.
+    l_freq : float
+        Low cutoff frequency for bandpass filter.
+    h_freq : float
+        High cutoff frequency for bandpass filter.
+    apply_filter : bool
+        Whether to apply bandpass filtering to the segments.
 
     Returns
     -------
@@ -424,7 +436,14 @@ def extract_segments_with_labels_bids(
             preload=True,
             reject_by_annotation=True,  # ensures BAD/EDGE are dropped
         )
+        epochs._data = epochs._data.astype(np.float32)
+        
+        if apply_filter:
+            fs = epochs.info["sfreq"]
+            sos = butter(4, [l_freq, h_freq], btype="bandpass", fs=fs, output="sos")
+            epochs._data = sosfiltfilt(sos, epochs._data, axis=2)
 
+        epochs.resample(128, method='polyphase')
         # Assign group ID for this block (useful for CV splitting later)
         ann_counter[desc] += 1
         block_id = f"{desc}_{ann_counter[desc]}"

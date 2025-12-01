@@ -5,16 +5,16 @@
 DATASET_DIR="data/BIDS_CHB-MIT"
 EPOCHS=30
 BATCH_SIZE=64
-LR=5e-4
-SUFFIX="zscore_F_T"
+LR=2e-3
+SUFFIX="T_1"
 INNER_CV_MODE="stratified"
 
 # Define subjects (CHB-MIT has subjects 01-24) 
 # - subject 12 is excluded due to incosistant channel naming
-SUBJECTS=(01 02 03 04 05 06 07 08 09 10 13 14 15 16 17 18 19 20 22 23 24)
+SUBJECTS=(01 02 03 04 05 06 07 08 09 10 11 13 14 15 16 17 18 19 20 22 23 24)
 
 # Define models
-MODELS=(EEGWaveNet CE-stSENet MB_dMGC_CWTFFNet)
+MODELS=(EEGWaveNet-tiny)
 
 echo "================================================================"
 echo "Starting training for all subjects with all models"
@@ -41,7 +41,6 @@ for MODEL in "${MODELS[@]}"; do
             --epochs $EPOCHS \
             --batch_size $BATCH_SIZE \
             --lr $LR \
-            --use_uint16 \
             --suffix "$SUFFIX" \
             --inner_cv_mode "$INNER_CV_MODE"
         

@@ -1,7 +1,6 @@
 import argparse
 from utils import (
     add_seizure_annotations_bids,
-    preprocess_chbmit,
     infer_preictal_interactal,
     extract_segments_with_labels_bids,
     scale_to_uint16,
@@ -21,8 +20,6 @@ from collections import defaultdict
 def process_chbmit_bids_dataset(
     dataset_dir: str,
     save_uint16: bool = False,
-    normalization_method: Optional[str] = "zscore",
-    apply_ica: bool = True,
     apply_filter: bool = True,
     plot: bool = False,
     plot_psd: bool = False,
@@ -40,10 +37,6 @@ def process_chbmit_bids_dataset(
     save_uint16 : bool, optional
         If True, saves EEG data scaled to uint16 with per-sample min/max for reconstruction.
         Default is False (save as float32).
-    normalization_method: {"zscore", "robust", None}
-        Normalization method to apply after resampling. Default is "zscore".
-    apply_ica: bool
-        If true, the ica will be applied, default = True.
     plot : bool, optional
         If True, plot raw data with annotations before segmentation.
         Default is False.
@@ -69,14 +62,13 @@ def process_chbmit_bids_dataset(
             annotation_file_path = raw_file_path.replace("_eeg.edf", "_events.tsv")
 
             raw = mne.io.read_raw_edf(raw_file_path, preload=True)
+            raw._data = raw._data.astype(np.float32)
 
             annotations = pd.read_csv(annotation_file_path, sep="\t")
 
             raw = add_seizure_annotations_bids(raw, annotations)
 
-            raw = preprocess_chbmit(
-                raw, apply_ica=apply_ica, apply_filter=apply_filter, normalize=normalization_method
-            )
+            # raw.resample(128, npad="auto")
             raws.append(raw)
 
         raw_all = mne.concatenate_raws(raws)
@@ -85,7 +77,7 @@ def process_chbmit_bids_dataset(
         if plot_psd:
             spectrum = raw_all.compute_psd()
             fig = spectrum.plot(average=True)
-            fig.savefig(session_path + f"/eeg/psd_plot_{str(normalization_method)}_{str(apply_ica)[0]}_{str(apply_filter)[0]}.png", dpi=300)
+            fig.savefig(session_path + f"/eeg/psd_plot_{str(apply_filter)[0]}.png", dpi=300)
             plt.close(fig)
 
         # plot the annotation
@@ -94,7 +86,15 @@ def process_chbmit_bids_dataset(
             plt.show()
 
         X, y, group_ids, event_stats = extract_segments_with_labels_bids(
-            raw_all, segment_sec=5, overlap=0.0, keep_labels={"preictal", "interictal"}, preictal_oversample_factor=oversample_factor
+            raw_all,
+            segment_sec=5,
+            overlap=0.0,
+            keep_labels={"preictal", "interictal"},
+            preictal_oversample_factor=oversample_factor,
+            sfreq=128.0,
+            l_freq=0.5,
+            h_freq=50.0,
+            apply_filter=apply_filter,
         )
 
         if show_statistics:
@@ -122,7 +122,7 @@ def process_chbmit_bids_dataset(
             X, scales = scale_to_uint16(X)
             np.savez_compressed(
                 session_path
-                + f"/eeg/processed_segments_{str(normalization_method)}_{str(apply_ica)[0]}_{str(apply_filter)[0]}_{str(oversample_factor)}_uint16.npz",
+                + f"/eeg/processed_segments_{str(apply_filter)[0]}_{str(oversample_factor)}_uint16.npz",
                 X=X,
                 y=y,
                 group_ids=group_ids,
@@ -132,7 +132,7 @@ def process_chbmit_bids_dataset(
             X = X.astype(np.float32)
             np.savez_compressed(
                 session_path
-                + f"/eeg/processed_segments_{str(normalization_method)}_{str(apply_ica)[0]}_{str(apply_filter)[0]}_{str(oversample_factor)}_float.npz",
+                + f"/eeg/processed_segments_{str(apply_filter)[0]}_{str(oversample_factor)}_float.npz",
                 X=X,
                 y=y,
                 group_ids=group_ids,
@@ -217,20 +217,6 @@ def parse_args():
     )
     
     parser.add_argument(
-        "--normalization_method",
-        type=str,
-        default="zscore",
-        choices=["zscore", "robust", "none"],
-        help="Normalization method to apply"
-    )
-    
-    parser.add_argument(
-        "--apply_ica",
-        action="store_true",
-        help="Apply ICA for artifact removal"
-    )
-    
-    parser.add_argument(
         "--apply_filter",
         action="store_true",
         help="Apply filtering to the data"
@@ -274,13 +260,10 @@ if __name__ == "__main__":
     args = parse_args()
     
     # Convert "none" to None for normalization
-    norm_method = None if args.normalization_method == "none" else args.normalization_method
     
     process_chbmit_bids_dataset(
         dataset_dir=args.dataset_dir,
         save_uint16=args.save_uint16,
-        normalization_method=norm_method,
-        apply_ica=args.apply_ica,
         apply_filter=args.apply_filter,
         plot=args.plot,
         plot_psd=args.plot_psd,
