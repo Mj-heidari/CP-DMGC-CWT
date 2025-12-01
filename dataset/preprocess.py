@@ -15,6 +15,7 @@ import matplotlib.pyplot as plt
 from collections import Counter
 from typing import Optional, List
 from collections import defaultdict
+from scipy.signal import butter, sosfiltfilt
 
 
 def process_chbmit_bids_dataset(
@@ -67,7 +68,15 @@ def process_chbmit_bids_dataset(
             annotations = pd.read_csv(annotation_file_path, sep="\t")
 
             raw = add_seizure_annotations_bids(raw, annotations)
+        
+            if apply_filter:
+                fs = raw.info["sfreq"]
+                l_freq=0.5,
+                h_freq=50.0,
+                sos = butter(4, [l_freq, h_freq], btype="bandpass", fs=fs, output="sos")
+                raw._data = sosfiltfilt(sos, raw._data, axis=2)
 
+            raw.resample(128, method='polyphase')
             # raw.resample(128, npad="auto")
             raws.append(raw)
 
@@ -92,8 +101,6 @@ def process_chbmit_bids_dataset(
             keep_labels={"preictal", "interictal"},
             preictal_oversample_factor=oversample_factor,
             sfreq=128.0,
-            l_freq=0.5,
-            h_freq=50.0,
             apply_filter=apply_filter,
         )
 
