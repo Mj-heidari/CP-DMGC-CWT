@@ -12,6 +12,7 @@ from captum.attr import IntegratedGradients
 from models.EEGWaveNet import EEGWaveNet
 from dataset.dataset import UnderSampledDataLoader, CHBMITDataset, make_cv_splitter
 from transforms.signal.wavletfilterbank import WaveletFilterBank
+from transforms.signal.normalize import InstanceNormTransform
 
 
 class XAI_Analyzer:
@@ -63,14 +64,14 @@ class XAI_Analyzer:
 
     def prepare_subject_dataset(self, subj_id):
         filter_bank = WaveletFilterBank(fs=128, combine_mode="concat_time")
-        offline_transforms = [filter_bank]
+        offline_transforms = [InstanceNormTransform(),filter_bank]
 
         dataset = CHBMITDataset(
             "data/BIDS_CHB-MIT",
-            use_uint16=True,
+            use_uint16=False,
             offline_transforms=[],
             online_transforms=offline_transforms,
-            suffix="zscore_F_T",
+            suffix="T_1",
             subject_id=subj_id,
         )
 
@@ -78,7 +79,7 @@ class XAI_Analyzer:
         return splits
 
     def load_model(self,fold):
-        model = EEGWaveNet()
+        model = EEGWaveNet(model_size='tiny')
         model_path = self.dir / f"checkpoints/best_model_outer{fold}_inner1.pth"
         model.load_state_dict(torch.load(model_path, map_location="cuda"))
         model.eval()
@@ -101,7 +102,7 @@ class XAI_Analyzer:
             ig = IntegratedGradients(model_forward)
             dataloader = UnderSampledDataLoader(test_dataset, batch_size=64)
 
-            for X, y in tqdm(dataloader, desc=f"Fold {fold+1} IG Computation"):
+            for X, y, _ in tqdm(dataloader, desc=f"Fold {fold+1} IG Computation"):
                 X = X.to(torch.float32).cuda()
                 y = y.cuda()
                 interictal_segments = X[y==0]
