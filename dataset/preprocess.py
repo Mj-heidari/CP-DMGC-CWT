@@ -3,7 +3,7 @@ from utils import (
     add_seizure_annotations_bids,
     infer_preictal_interactal,
     extract_segments_with_labels_bids,
-    scale_to_uint16,
+    scale_to_uint16, preprocess_chbmit
 )
 import os
 import mne
@@ -15,13 +15,20 @@ import matplotlib.pyplot as plt
 from collections import Counter
 from typing import Optional, List
 from collections import defaultdict
-from scipy.signal import butter, sosfiltfilt
 
 
 def process_chbmit_bids_dataset(
     dataset_dir: str,
     save_uint16: bool = False,
     apply_filter: bool = True,
+    apply_ica: bool = True,
+    apply_downsampling: bool = True,
+    filter_type: str = "FIR",
+    l_freq: float = 0.5,
+    h_freq: float = 50.0,
+    sfreq_new: float = 128.0,
+    downsample_method: str = "polyphase",
+    normalize: Optional[str] = None,
     plot: bool = False,
     plot_psd: bool = False,
     show_statistics: bool = True,
@@ -50,7 +57,22 @@ def process_chbmit_bids_dataset(
         Default is None.
     """
 
+    print("Processing CHB-MIT BIDS dataset...")
+    print("Settings:")
+    print(f"  Dataset dir: {dataset_dir}")
+    print(f"  Save uint16: {save_uint16}")
+    print(f"  Apply filter: {apply_filter} (type: {filter_type}, l_freq: {l_freq}, h_freq: {h_freq})")
+    print(f"  Apply ICA: {apply_ica}")
+    print(f"  Apply downsampling: {apply_downsampling} (method: {downsample_method}, sfreq_new: {sfreq_new})")
+    print(f"  Normalize: {normalize}")
+    print(f"  Plot raw data: {plot}")
+    print(f"  Plot PSD: {plot_psd}")
+    print(f"  Show statistics: {show_statistics}")
+    print(f"  Subjects to process: {subj_nums if subj_nums is not None else 'All'}")
+    print(f"  Preictal oversample factor: {oversample_factor}")
+
     sessions_pathes = glob.glob(os.path.join(dataset_dir, "*", "*"))
+    print(f"Found {len(sessions_pathes)} sessions in dataset.")
     for session_path in sorted(sessions_pathes):
         print(session_path)
         subj_id = session_path.split("\\")[-2].split("-")[-1]
@@ -63,21 +85,23 @@ def process_chbmit_bids_dataset(
             annotation_file_path = raw_file_path.replace("_eeg.edf", "_events.tsv")
 
             raw = mne.io.read_raw_edf(raw_file_path, preload=True)
-            raw._data = raw._data.astype(np.float32)
 
             annotations = pd.read_csv(annotation_file_path, sep="\t")
 
             raw = add_seizure_annotations_bids(raw, annotations)
-        
-            if apply_filter:
-                fs = raw.info["sfreq"]
-                l_freq=0.5,
-                h_freq=50.0,
-                sos = butter(4, [l_freq, h_freq], btype="bandpass", fs=fs, output="sos")
-                raw._data = sosfiltfilt(sos, raw._data, axis=1)
-
-            raw.resample(128, method='polyphase')
-            # raw.resample(128, npad="auto")
+            
+            raw = preprocess_chbmit(
+                raw,
+                apply_filter=apply_filter,
+                filter_type=filter_type,
+                l_freq=l_freq,
+                h_freq=h_freq,
+                apply_ica=apply_ica,
+                apply_downsampling=apply_downsampling,
+                downsample_method=downsample_method,
+                sfreq_new=sfreq_new,
+                normalize=normalize,
+            )
             raws.append(raw)
 
         raw_all = mne.concatenate_raws(raws)
@@ -226,7 +250,61 @@ def parse_args():
         action="store_true",
         help="Apply filtering to the data"
     )
+
+    parser.add_argument(
+        "--filter_type",
+        type=str,
+        default="FIR",
+        help="Type of bandpass filter to use (IIR or FIR)"
+    )
+
+    parser.add_argument(
+        "--apply_ica",
+        action="store_true",
+        help="Apply ICA to the data"
+    )
     
+    parser.add_argument(
+        "--normalize",
+        type=str,
+        default="none",
+        help="Normalization method (zscore, robust, none)"
+    )
+
+    parser.add_argument(
+        "--sfreq_new",
+        type=float,
+        default=128.0,
+        help="New sampling frequency after downsampling"
+    )
+
+    parser.add_argument(
+        "--l_freq",
+        type=float,
+        default=0.5,
+        help="Low cutoff frequency for bandpass filter"
+    )
+
+    parser.add_argument(
+        "--h_freq",
+        type=float,
+        default=50.0,
+        help="High cutoff frequency for bandpass filter"    
+    )
+
+    parser.add_argument(
+        "--apply_downsampling",
+        action="store_true",
+        help="Apply downsampling to the data"
+    )
+
+    parser.add_argument(
+        "--downsample_method",
+        type=str,
+        default="polyphase",
+        help="Method for downsampling (polyphase, fft, resample)"
+    )
+
     parser.add_argument(
         "--plot",
         action="store_true",
@@ -270,6 +348,14 @@ if __name__ == "__main__":
         dataset_dir=args.dataset_dir,
         save_uint16=args.save_uint16,
         apply_filter=args.apply_filter,
+        apply_ica=args.apply_ica,
+        filter_type=args.filter_type,
+        l_freq=args.l_freq,
+        h_freq=args.h_freq,
+        sfreq_new=args.sfreq_new,
+        downsample_method=args.downsample_method,
+        apply_downsampling=args.apply_downsampling,
+        normalize=None if args.normalize.lower() == "none" else args.normalize,
         plot=args.plot,
         plot_psd=args.plot_psd,
         show_statistics=not args.no_statistics,

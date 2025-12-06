@@ -3,6 +3,7 @@ import mne
 from mne.preprocessing import ICA
 from typing import Tuple, List, Set, Optional
 import pandas as pd
+from scipy.signal import butter, sosfiltfilt
 
 def preprocess_chbmit(
     raw: mne.io.Raw,
@@ -11,6 +12,9 @@ def preprocess_chbmit(
     h_freq: float = 50.0,
     apply_ica: bool = True,
     apply_filter: bool = True,
+    filter_type: str = "IIR",
+    apply_downsampling: bool = True,
+    downsample_method: str = "polyphase",
     normalize: Optional[str] = "zscore",
 ) -> Tuple[np.ndarray, List[str], int]:
     """
@@ -37,6 +41,10 @@ def preprocess_chbmit(
         if true the ica will be applied, default = True.
     apply_filter: bool
         If true the filtering will be applied, default = True.
+    filter_type : {"IIR", "FIR"}
+        Type of bandpass filter to use. Default is "IIR".
+    downsample_method : {"polyphase", "fft"}
+        Method for downsampling. Default is "polyphase".
     normalize : {"zscore", "robust", None}
         Normalization method to apply after resampling. Default is "zscore".
 
@@ -47,15 +55,16 @@ def preprocess_chbmit(
     """
     components_removed = 0
     try:
-        raw_proc = raw.copy().pick_types(eeg=True)
+        raw_proc = raw.copy().pick(picks="eeg")
         
         # 1. Bandpass filter
-        if apply_filter:
+        if apply_filter and filter_type == "FIR":
             raw_proc.filter(l_freq, h_freq, fir_design="firwin", phase="zero-double")
-
-        # # 2. Notch filter (60 Hz + harmonics)
-        # raw_proc.notch_filter(np.arange(60, h_freq, 60), fir_design="firwin")
-
+        elif apply_filter and filter_type == "IIR":
+            fs = raw_proc.info["sfreq"]
+            sos = butter(4, [l_freq, h_freq], btype="bandpass", fs=fs, output="sos")
+            raw_proc._data = sosfiltfilt(sos, raw_proc._data, axis=1)
+        
         # 3. ICA
         if apply_ica:
             ica = ICA(
@@ -91,7 +100,10 @@ def preprocess_chbmit(
                 ica.apply(raw_proc)
 
         # 4. Downsampling
-        raw_proc.resample(sfreq_new, npad="auto")
+        if apply_downsampling and downsample_method == "fft":
+            raw_proc.resample(sfreq_new, npad="auto", method='fft')
+        elif apply_downsampling and downsample_method == "polyphase":
+            raw_proc.resample(sfreq_new, method='polyphase')
 
         # 4. Normalization (channel-wise, on whole continuous data)
         if normalize is not None:
