@@ -1,11 +1,11 @@
-# CP-DMGC-CWT
-Cross-Patient Seizure Prediction via Dynamic Multi-Graph Convolution and Channel-Weighted Transformer
+# Introduction
+A Flexible Framework for Testing and Developing Deep Learning Models for Seizure Prediction and Detection Task using CHB-MIT dataset.
 
 ## Quick Start
 
 ```bash
-git clone https://github.com/Mj-Heidari/CP-DMGC-CWT.git
-cd CP-DMGC-CWT
+git clone https://github.com/mehrdad-anvari/seizure-prediction.git
+cd seizure-prediction
 python -m venv .venv
 # Windows: .venv\Scripts\activate
 source .venv/bin/activate
