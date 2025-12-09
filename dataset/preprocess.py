@@ -33,7 +33,8 @@ def process_chbmit_bids_dataset(
     plot_psd: bool = False,
     show_statistics: bool = True,
     subj_nums: Optional[List[int]] = None,
-    oversample_factor: int = 1,
+    preictal_oversample_factor: int = 1,
+    seizure_oversample_factor: int = 1,
 ):
     """
     Process all subjects in CHB-MIT (BIDS format) dataset and save per-subject segments and labels.
@@ -69,7 +70,8 @@ def process_chbmit_bids_dataset(
     print(f"  Plot PSD: {plot_psd}")
     print(f"  Show statistics: {show_statistics}")
     print(f"  Subjects to process: {subj_nums if subj_nums is not None else 'All'}")
-    print(f"  Preictal oversample factor: {oversample_factor}")
+    print(f"  Preictal oversample factor: {preictal_oversample_factor}")
+    print(f"  Seizure oversample factor: {seizure_oversample_factor}")
 
     sessions_pathes = glob.glob(os.path.join(dataset_dir, "*", "*"))
     print(f"Found {len(sessions_pathes)} sessions in dataset.")
@@ -118,22 +120,33 @@ def process_chbmit_bids_dataset(
             raw_all.plot(scalings="auto", duration=30)
             plt.show()
 
-        X, y, group_ids, event_stats = extract_segments_with_labels_bids(
+        X, y, meta_df, event_stats = extract_segments_with_labels_bids(
             raw_all,
             segment_sec=5,
-            overlap=0.0,
-            keep_labels={"preictal", "interictal"},
-            preictal_oversample_factor=oversample_factor,
+            preictal_oversample_factor=preictal_oversample_factor,
+            seizure_oversample_factor=seizure_oversample_factor,
         )
 
         if show_statistics:
             # --- Print statistics ---
             print("\n=== Extraction statistics ===")
             print(f"Total segments: {len(y)}")
+            
             counts = Counter(y)
             for label, cnt in counts.items():
                 print(f"  {label}: {cnt}")
-            group_counts = Counter(group_ids)
+
+            # ----- Updated: count by event_id or any grouping column in meta_df -----
+            if "event_id" in meta_df.columns:
+                group_col = "event_id"
+            elif "group_id" in meta_df.columns:
+                group_col = "group_id"
+            else:
+                # fallback: first column
+                group_col = meta_df.columns[0]
+
+            group_counts = meta_df[group_col].value_counts()
+
             print(f"Groups extracted: {len(group_counts)}")
             for gid, cnt in group_counts.items():
                 print(f"  {gid}: {cnt} segments")
@@ -142,29 +155,35 @@ def process_chbmit_bids_dataset(
         # --- Save event stats to CSV ---
         stats_file = os.path.join(session_path, "eeg/event_stats.csv")
         with open(stats_file, "w", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=["event_id", "label", "onset_sec", "duration_sec", "n_segments", "applied_overlap_sec", "applied_factor"])
+            writer = csv.DictWriter(
+                f,
+                fieldnames=[
+                    "event_id", "label", "onset_sec", "duration_sec",
+                    "n_segments", "applied_overlap_sec", "applied_factor"
+                ]
+            )
             writer.writeheader()
             writer.writerows(event_stats)
+
         print(f"Saved event stats to {stats_file}")
 
+        # =============== Saving arrays =================
         if save_uint16:
             X, scales = scale_to_uint16(X)
             np.savez_compressed(
-                session_path
-                + f"/eeg/processed_segments_{str(apply_filter)[0]}_{str(oversample_factor)}_uint16.npz",
+                os.path.join(session_path, "eeg/processed_segments_uint16.npz"),
                 X=X,
                 y=y,
-                group_ids=group_ids,
+                meta_df=meta_df.to_dict("list"),   # <-- Updated
                 scales=scales,
             )
         else:
             X = X.astype(np.float32)
             np.savez_compressed(
-                session_path
-                + f"/eeg/processed_segments_{str(apply_filter)[0]}_{str(oversample_factor)}_float.npz",
+                os.path.join(session_path, "eeg/processed_segments_float.npz"),
                 X=X,
                 y=y,
-                group_ids=group_ids,
+                meta_df=meta_df.to_dict("list"),   # <-- Updated
             )
 
 
@@ -336,6 +355,13 @@ def parse_args():
         help="Oversampling factor for preictal segments"
     )
 
+    parser.add_argument(
+        "--seizure_oversample_factor",
+        type=int,
+        default=1,
+        help="Oversampling factor for seizure segments"
+    )
+
     return parser.parse_args()
 
 
@@ -360,7 +386,8 @@ if __name__ == "__main__":
         plot_psd=args.plot_psd,
         show_statistics=not args.no_statistics,
         subj_nums=args.subjects,
-        oversample_factor=args.preictal_oversample_factor,
+        preictal_oversample_factor=args.preictal_oversample_factor,
+        seizure_oversample_factor=args.seizure_oversample_factor,
     )
     
     if args.build_summary:

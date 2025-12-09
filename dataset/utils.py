@@ -406,99 +406,180 @@ def infer_preictal_interactal(
 def extract_segments_with_labels_bids(
     raw: mne.io.Raw,
     segment_sec: float = 5.0,
-    overlap: float = 0.0,
-    keep_labels: Set[str] = {"preictal", "interictal"},
+    keep_labels: Set[str] = {"seizure", "preictal", "interictal", "post_buffer", "pre_buffer"},
     preictal_oversample_factor: float = 1.0,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, list[dict]]:
+    seizure_oversample_factor: float = 1.0,
+):
     """
-    Segment EEG into fixed-length epochs based on annotations.
-    Optionally oversample preictal segments by creating overlapping windows.
+    Segment an annotated MNE Raw object into fixed-length EEG epochs, produce
+    per-epoch metadata, and optionally oversample specific annotation types
+    (preictal or seizure) using internal overlap.
 
     Parameters
     ----------
     raw : mne.io.Raw
-        Continuous EEG recording with annotations.
+        Annotated Raw EEG data.
     segment_sec : float
-        Length of each segment in seconds.
-    overlap : float
-        Base overlap between consecutive segments in seconds (for non-preictal).
-    keep_labels : set of str
-        Annotation descriptions to keep (e.g., {"preictal", "interictal"}).
+        Length of each EEG segment in seconds.
+    keep_labels : Set[str]
+        Set of annotation labels to extract segments from.  Default includes
+        'seizure', 'preictal', 'interictal', 'post_buffer', 'pre_buffer'.
     preictal_oversample_factor : float
-        Approximate factor by which to increase the number of preictal segments.
-        For example, 5.0 means ~5× more segments by using overlap internally.
-        Values <= 1.0 disable oversampling.
+        Oversampling factor for 'preictal' segments. Default = 1.0 (no oversampling).
+    seizure_oversample_factor : float
+        Oversampling factor for 'seizure' segments. Default = 1.0 (no oversampling).
 
     Returns
     -------
-    X : np.ndarray, shape (n_epochs, n_channels, n_times)
-        Segmented EEG data.
-    y : np.ndarray, shape (n_epochs,)
-        Labels corresponding to each segment.
-    group_ids : np.ndarray, shape (n_epochs,)
-        IDs for the original annotation interval each segment came from.
-    event_stats : list of dict
-        Summary info for each annotated event.
+    X : np.ndarray
+        EEG segments of shape (n_segments, n_channels, n_times).
+    y : np.ndarray
+        Labels for each segment of shape (n_segments,).
+    meta_df : pd.DataFrame
+        Metadata DataFrame with per-segment information.
+    event_stats : List[Dict]
+        Summary statistics for each annotated event.
+
+    Notes
+    -----
+    - Segments overlapping annotation boundaries are excluded.
+    - Augmented segments (due to oversampling) are flagged in metadata.
+    
     """
-    X, y, group_ids = [], [], []
-    ann_counter = {lab: 0 for lab in keep_labels}  # counter for each label
+
+    import numpy as np
+    import pandas as pd
+    import mne
+
+    X_list = []
+    y_list = []
+    meta_list = []
+
+    ann_counter = {lab: 0 for lab in keep_labels}
     event_stats = []
+    sfreq = raw.info["sfreq"]
+    global_id = 0 
 
     for desc, onset, duration in zip(
-        raw.annotations.description, raw.annotations.onset, raw.annotations.duration
+        raw.annotations.description,
+        raw.annotations.onset,
+        raw.annotations.duration,
     ):
         if desc not in keep_labels:
             continue
 
-        # Adjust overlap for preictal oversampling
+        # ------------------------------------------------------------------
+        # Determine internal overlap from oversampling factor
+        # ------------------------------------------------------------------
         if desc.lower() == "preictal" and preictal_oversample_factor > 1.0:
-            # Compute overlap ratio needed to roughly multiply samples by factor
-            # (1 / (1 - overlap_ratio)) ≈ factor → overlap_ratio ≈ 1 - 1/factor
             overlap_ratio = 1.0 - 1.0 / preictal_oversample_factor
-            this_overlap = min(segment_sec * overlap_ratio, segment_sec - 0.01)
+            internal_overlap = min(segment_sec * overlap_ratio, segment_sec - 0.01)
+        elif desc.lower() == "seizure" and seizure_oversample_factor > 1.0:
+            overlap_ratio = 1.0 - 1.0 / seizure_oversample_factor
+            internal_overlap = min(segment_sec * overlap_ratio, segment_sec - 0.01)
         else:
-            this_overlap = overlap
+            internal_overlap = 0.0
 
-        # Crop and segment the annotation region
+        # ------------------------------------------------------------------
+        # Crop annotation region and segment into epochs
+        # ------------------------------------------------------------------
         segment_raw = raw.copy().crop(tmin=onset, tmax=onset + duration)
+
         epochs = mne.make_fixed_length_epochs(
             segment_raw,
             duration=segment_sec,
-            overlap=this_overlap,
+            overlap=internal_overlap,
             preload=True,
-            reject_by_annotation=True,  # ensures BAD/EDGE are dropped
+            reject_by_annotation=True,
         )
-        
-        # Assign group ID for this block (useful for CV splitting later)
-        ann_counter[desc] += 1
-        block_id = f"{desc}_{ann_counter[desc]}"
 
-        if len(epochs) < 20:
+        if len(epochs) == 0:
             continue
-        # Collect
-        X.append(epochs.get_data())
-        y.extend([desc] * len(epochs))
-        group_ids.extend([block_id] * len(epochs))
 
-        # --- Store event-level stats ---
+        # ------------------------------------------------------------------
+        # Event bookkeeping
+        # ------------------------------------------------------------------
+        ann_counter[desc] += 1
+        event_id = f"{desc}_{ann_counter[desc]}"
+        n_segs = len(epochs)
+
+        # Epoch start times relative to event onset
+        starts = (epochs.events[:, 0]) / sfreq
+        # ------------------------------------------------------------------
+        # Augmentation flag
+        # ------------------------------------------------------------------
+        baseline = np.arange(0, duration + 1e-6, segment_sec)
+
+        def is_augmented(t):
+            return not np.any(np.isclose(t, baseline, atol=1e-3))
+
+        aug_flags = np.array([is_augmented(t) for t in starts], dtype=int)
+
+        # ------------------------------------------------------------------
+        # Noise features
+        # ------------------------------------------------------------------
+        data = epochs.get_data()  # (N, C, T)
+        pp = data.max(axis=2) - data.min(axis=2)
+        sd = data.std(axis=2)
+
+        pp_mean = pp.mean(axis=1)
+        pp_max = pp.max(axis=1)
+        sd_mean = sd.mean(axis=1)
+        sd_max = sd.max(axis=1)
+
+        # ------------------------------------------------------------------
+        # Collect epoch data & metadata
+        # ------------------------------------------------------------------
+        for i in range(n_segs):
+            X_list.append(data[i])
+            y_list.append(desc)
+
+            meta_list.append({
+                "event_id": event_id,
+                "label": desc,
+                "epoch_index_within_event": i,
+                "global_epoch_id": global_id,
+                "n_segments_in_event": n_segs,
+                "start_time_in_event": float(starts[i]),
+                "augmented": int(aug_flags[i]),
+                "pp_mean": float(pp_mean[i]),
+                "pp_max": float(pp_max[i]),
+                "sd_mean": float(sd_mean[i]),
+                "sd_max": float(sd_max[i]),
+                "onset_sec": float(onset),
+                "duration_sec": float(duration),
+            })
+            global_id += 1
+
+        # ------------------------------------------------------------------
+        # Event summary
+        # ------------------------------------------------------------------
         event_stats.append({
-            "event_id": block_id,
+            "event_id": event_id,
             "label": desc,
             "onset_sec": float(onset),
             "duration_sec": float(duration),
-            "n_segments": len(epochs),
-            "applied_overlap_sec": float(this_overlap),
-            "applied_factor": float(preictal_oversample_factor if desc.lower() == "preictal" else 1.0),
+            "n_segments": n_segs,
+            "applied_overlap_sec": float(internal_overlap),
         })
 
-    if not X:
-        return np.empty((0,)), np.empty((0,)), np.empty((0,)), []
+    # ----------------------------------------------------------------------
+    # Final assembly
+    # ----------------------------------------------------------------------
+    if not X_list:
+        return (
+            np.empty((0,)),
+            np.empty((0,)),
+            pd.DataFrame(),
+            event_stats,
+        )
 
-    X = np.concatenate(X, axis=0)
-    y = np.array(y)
-    group_ids = np.array(group_ids)
+    X = np.stack(X_list, axis=0)
+    y = np.array(y_list)
+    meta_df = pd.DataFrame(meta_list)
 
-    return X, y, group_ids, event_stats
+    return X, y, meta_df, event_stats
+
 
 
 def scale_to_uint16(X: np.ndarray):
