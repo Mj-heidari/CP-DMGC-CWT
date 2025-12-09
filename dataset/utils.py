@@ -185,12 +185,15 @@ def add_seizure_annotations_bids(
     return raw
 
 
+def _intervals_overlap(a_start: float, a_end: float, b_start: float, b_end: float) -> bool:
+    return (a_start < b_end) and (b_start < a_end)
+
+
 def infer_preictal_interactal(
     raw: mne.io.Raw,
     preictal_minutes: int = 15,
-    postictal_exclude_minutes: int = 120,
-    dynamic_preictal: bool = False,
-    SPE: int = 0,
+    post_buffer_minutes: int = 60,
+    pre_buffer_minutes: int = 45,
 ) -> mne.io.Raw:
     """
     Infer preictal and interictal periods in the Raw object based on seizure annotations.
@@ -201,14 +204,10 @@ def infer_preictal_interactal(
         Raw EEG with seizure annotations.
     preictal_minutes : int
         Minutes before seizure onset to mark as preictal. Default = 15.
-    postictal_exclude_minutes : int
-        Minutes after seizure offset to exclude. Default = 120.
-    dynamic_preictal : bool, optional
-        If True, adjust preictal duration dynamically when overlapping with excluded intervals.
-        Default is False.
-    SPE : int, optional
-        Seizure Prediction Horizon (in seconds). The preictal period will end at (onset - SPE).
-        Default is 0.
+    post_buffer_minutes : int
+        Minutes after seizure offset to exclude. Default = 60.
+    pre_buffer_minutes : int
+        Minutes before preictal to exclude. Default = 60.
 
     Returns
     -------
@@ -219,154 +218,188 @@ def infer_preictal_interactal(
         print("No seizures to infer preictal/interictal periods.")
         return raw
 
-    # sfreq = raw.info["sfreq"]
     total_duration = raw.times[-1]
 
-    new_annotations = []
+    # collect original annotations to preserve them
+    orig_onsets = list(raw.annotations.onset)
+    orig_durs = list(raw.annotations.duration)
+    orig_descs = list(raw.annotations.description)
 
-    seizure_onsets = [
-        annot["onset"]
-        for annot in raw.annotations
-        if annot["description"].lower() == "seizure"
-    ]
-    seizure_offsets = [
-        annot["onset"] + annot["duration"]
-        for annot in raw.annotations
-        if annot["description"].lower() == "seizure"
-    ]
+    # find seizure annotations (case-insensitive 'seizure')
+    seizure_pairs = []
+    for o, d, desc in zip(orig_onsets, orig_durs, orig_descs):
+        if isinstance(desc, str) and desc.lower() == "seizure":
+            seizure_pairs.append((o, o + d))
 
-    for onset, offset in zip(seizure_onsets, seizure_offsets):
-        # mark postictal_exclude_minutes mins after offset as excluded
-        exclude_start = offset
-        ends = [start for start in seizure_onsets if start - offset > 0] + [
-            offset + postictal_exclude_minutes * 60,
-            total_duration,
-        ]
-        exclude_end = min(ends)
-        new_annotations.append(
-            {
-                "onset": exclude_start,
-                "duration": exclude_end - exclude_start,
-                "description": "excluded",
-            }
-        )
+    if not seizure_pairs:
+        return raw
 
-    for i, onset in enumerate(seizure_onsets):
-        # mark preictal_minutes mins before onset as preictal if the period is not excluded
-        preictal_start = max(0, onset - preictal_minutes  * 60)
-        preictal_end = max(0, onset - SPE)
+    # sort seizure onsets/offsets by onset
+    seizure_pairs = sorted(seizure_pairs, key=lambda x: x[0])
+    seizure_onsets = [s for s, _ in seizure_pairs]
+    seizure_offsets = [e for _, e in seizure_pairs]
 
-        if not any(
-            [
-                annot["onset"] < preictal_end - 1 < annot["onset"] + annot["duration"]
-                for annot in new_annotations
-                if annot["description"] == "excluded"
-            ]
-        ):
-            new_annot = {
-                "duration": preictal_end - preictal_start,
-                "onset": preictal_start,
-            }
-            if dynamic_preictal:
-                for annot in new_annotations:
-                    if (
-                        annot["onset"]
-                        < preictal_start
-                        < annot["onset"] + annot["duration"]
-                    ):
-                        new_annot["duration"] = preictal_end - (
-                            annot["onset"] + annot["duration"]
-                        )
-                        new_annot["onset"] = annot["onset"] + annot["duration"]
+    new_annots = []  # will hold dicts: {"onset":..., "duration":..., "description":...}
 
-            new_annotations.append(
-                {
-                    "onset": new_annot["onset"],
-                    "duration": new_annot["duration"],
-                    "description": "preictal",
-                }
-            )
+    # 1) build post_buffer for each seizure
+    for idx, (onset, offset) in enumerate(zip(seizure_onsets, seizure_offsets)):
+        # compute proposed end: offset + buffer, but clip to next seizure onset and to recording end
+        proposed_end = offset + post_buffer_minutes * 60
+        if idx + 1 < len(seizure_onsets):
+            next_seizure_onset = seizure_onsets[idx + 1]
+            end = min(proposed_end, next_seizure_onset, total_duration)
+        else:
+            end = min(proposed_end, total_duration)
+        start = offset
+        if end > start:
+            new_annots.append({"onset": start, "duration": end - start, "description": "post_buffer"})
 
-            # exclude the SPE gap
-            if SPE > 0 and preictal_end < onset:
-                new_annotations.append(
-                    {
-                        "onset": preictal_end,
-                        "duration": onset - preictal_end,
-                        "description": "excluded",
-                    }
+    # helper lists for quickly checking overlaps
+    post_buffer_intervals = [(a["onset"], a["onset"] + a["duration"]) for a in new_annots if a["description"] == "post_buffer"]
+    seizure_intervals = list(zip(seizure_onsets, seizure_offsets))
+
+    # 2) build preictal (adjust if overlapping with post_buffer or seizure intervals)
+    for onset in seizure_onsets:
+        pre_start = max(0.0, onset - preictal_minutes * 60)
+        pre_end = onset
+        # find any exclusion interval that overlaps [pre_start, pre_end)
+        # consider post_buffer and seizures as exclusions
+        exclusion_intervals = post_buffer_intervals + seizure_intervals
+        # If pre_start overlaps any exclusion interval, shift start to the end of that exclusion
+        overlapping_ends = [e for (s, e) in exclusion_intervals if _intervals_overlap(s, e, pre_start, pre_end)]
+        if overlapping_ends:
+            # shift start to the latest overlapping end (the earliest safe start)
+            adjusted_start = max(overlapping_ends)
+            pre_start = max(pre_start, adjusted_start)
+        # finalize
+        if pre_end > pre_start:
+            new_annots.append({"onset": pre_start, "duration": pre_end - pre_start, "description": "preictal"})
+
+    # update preictal_onsets list (for pre_buffer calculation)
+    preictal_intervals = [(a["onset"], a["onset"] + a["duration"]) for a in new_annots if a["description"] == "preictal"]
+
+    # 3) build pre_buffer when positive
+    delta_sec = (pre_buffer_minutes) * 60
+    if delta_sec > 0:
+        for pre_onset, pre_offset in preictal_intervals:
+            exclude_end = pre_onset
+            exclude_start = max(0.0, pre_onset - delta_sec)
+
+            # If exclude_start overlaps a post_buffer, move start forward
+            for pb_start, pb_end in post_buffer_intervals:
+                if _intervals_overlap(pb_start, pb_end, exclude_start, exclude_end):
+                    exclude_start = max(exclude_start, pb_end)
+
+            # If exclude_start falls inside a seizure, push to end of that seizure + post_buffer_minutes (as in your original attempt)
+            for sez_start, sez_end in seizure_intervals:
+                if sez_start < exclude_start < sez_end:
+                    exclude_start = min(total_duration, sez_end + post_buffer_minutes * 60 + 1)
+
+            if exclude_end > exclude_start:
+                new_annots.append({"onset": exclude_start, "duration": exclude_end - exclude_start, "description": "pre_buffer"})
+    # 4) Build list of all intervals to compute interictal as complement.
+    # Start from original non-boundary annotations (keep them) + seizure intervals + new_annots
+    # We will preserve original annotations (including non-seizure like BAD boundary, etc).
+    # Keep all annotations in combined lists (including boundaries)
+    combined_onsets = list(orig_onsets)
+    combined_durs = list(orig_durs)
+    combined_descs = list(orig_descs)
+
+    for a in new_annots:
+        combined_onsets.append(a["onset"])
+        combined_durs.append(a["duration"])
+        combined_descs.append(a["description"])
+
+    # ----------------------------------------------------------
+    # Build occupied intervals used only for interictal computation
+    # Ignore boundaries here
+    # ----------------------------------------------------------
+    occupied_intervals = []
+    for o, d, desc in zip(combined_onsets, combined_durs, combined_descs):
+        if desc in ["EDGE boundary", "BAD boundary"]:
+            continue
+        start = float(o)
+        end   = float(o + d)
+        occupied_intervals.append((start, end, desc))
+
+    # ----------------------------------------------------------
+    # Sort and check for overlaps & adjacency constraints
+    # ----------------------------------------------------------
+    occupied_intervals.sort(key=lambda x: x[0])
+
+    for (s1, e1, d1), (s2, e2, d2) in zip(occupied_intervals, occupied_intervals[1:]):
+        if e1 > s2:
+            raise ValueError(f"Overlap detected: {d1} [{s1},{e1}) and {d2} [{s2},{e2})")
+        if d1 == "seizure" and d2 != "post_buffer":
+            raise ValueError(f"Expected post_buffer after seizure ending at {e1}, found {d2}")
+        if d1 == "preictal" and d2 != "seizure":
+            raise ValueError(f"Expected seizure after preictal ending at {e1}, found {d2}")
+        if d1 == "pre_buffer" and d2 != "preictal":
+            raise ValueError(f"Expected preictal after pre_buffer ending at {e1}, found {d2}")
+        if (d1, d2) in [
+            ("seizure", "post_buffer"),
+            ("preictal", "seizure"),
+            ("pre_buffer", "preictal")
+        ]:
+            if e1 != s2:
+                raise ValueError(
+                    f"Expected {d2} to start immediately after {d1}: "
+                    f"{d1} ends at {e1}, {d2} starts at {s2}"
                 )
 
-    # mark (postictal_exclude_minutes - preictal_minutes) before each preictal as excluded
-    preictal_onsets = [
-        annot["onset"]
-        for annot in new_annotations
-        if annot["description"] == "preictal"
-    ]
-    for pre_onset in preictal_onsets:
-        exclude_start = max(0, pre_onset - (postictal_exclude_minutes - preictal_minutes) * 60)
-        exclude_end = pre_onset
-        flag = True
-        for new_annot in new_annotations:
-            if new_annot["description"] == "excluded" and (
-                new_annot["onset"]
-                < exclude_start
-                < new_annot["onset"] + new_annot["duration"]
-            ):
-                new_annot["duration"] = pre_onset - new_annot["onset"]
-                flag = False
+    # ----------------------------------------------------------
+    # Compute interictal as complement
+    # ----------------------------------------------------------
+    interictal_intervals = []
+    cur = 0.0
+    for start, end, desc in occupied_intervals:
+        if cur < start:
+            interictal_intervals.append((cur, start))
+        cur = end
+    if cur < total_duration:
+        interictal_intervals.append((cur, total_duration))
 
-        if flag:
-            new_annotations.append(
-                {
-                    "onset": exclude_start,
-                    "duration": exclude_end - exclude_start,
-                    "description": "excluded",
-                }
+    # add interictal intervals to combined lists
+    for s, e in interictal_intervals:
+        combined_onsets.append(s)
+        combined_durs.append(e - s)
+        combined_descs.append("interictal")
+
+    # ----------------------------------------------------------
+    # FINAL GLOBAL CHECK: ensure no gaps and no overlaps
+    # except for EDGE/BAD boundaries (ignored in checks)
+    # ----------------------------------------------------------
+
+    # Build full intervals including interictal, but skip boundaries in checking
+    full = []
+    for o, d, desc in zip(combined_onsets, combined_durs, combined_descs):
+        if desc in ["EDGE boundary", "BAD boundary"]:
+            continue
+        full.append((o, o + d, desc))
+
+    # Sort
+    full_sorted = sorted(full, key=lambda x: x[0])
+
+    # Check no overlap and no gap
+    for (s1, e1, d1), (s2, e2, d2) in zip(full_sorted, full_sorted[1:]):
+        # Overlap check
+        if e1 > s2:
+            raise ValueError(
+                f"Overlap detected between intervals ({s1},{e1}) and ({s2},{e2}). "
+                f"Inspect annotation logic."
             )
 
-    # mark all other times as interictal
-    all_annot_intervals = [
-        (annot["onset"], annot["onset"] + annot["duration"])
-        for annot in new_annotations
-        if (
-            annot["description"] != "BAD boundary"
-            and annot["description"] != "EDGE boundary"
-        )
-    ] + [
-        (annot["onset"], annot["onset"] + annot["duration"])
-        for annot in raw.annotations
-        if annot["description"].lower() == "seizure"
-    ]
-
-    all_annot_intervals.sort(key=lambda x: x[0])  # sort by onset time
-    print(all_annot_intervals)
-    current_time = 0.0
-    for start, end in all_annot_intervals:
-        if current_time < start:
-            new_annotations.append(
-                {
-                    "onset": current_time,
-                    "duration": start - current_time,
-                    "description": "interictal",
-                }
+        # Gap check
+        if e1 != s2:
+            raise ValueError(
+                f"Gap detected: interval {d1} ends at {e1}, "
+                f"but next interval {d2} starts at {s2}."
             )
-        current_time = max(current_time, end)
-    if current_time < total_duration:
-        new_annotations.append(
-            {
-                "onset": current_time,
-                "duration": total_duration - current_time,
-                "description": "interictal",
-            }
-        )
-
-    raw.annotations.append(
-        onset=[annot["onset"] for annot in new_annotations],
-        duration=[annot["duration"] for annot in new_annotations],
-        description=[annot["description"] for annot in new_annotations],
-    )
-
+        
+    # ----------------------------------------------------------
+    # Final write-back: includes ALL original + new + boundaries
+    # ----------------------------------------------------------
+    raw.set_annotations(mne.Annotations(onset=combined_onsets, duration=combined_durs, description=combined_descs))
     return raw
 
 

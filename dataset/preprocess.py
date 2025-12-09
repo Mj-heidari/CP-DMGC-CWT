@@ -105,7 +105,7 @@ def process_chbmit_bids_dataset(
             raws.append(raw)
 
         raw_all = mne.concatenate_raws(raws)
-        raw_all = infer_preictal_interactal(raw_all, postictal_exclude_minutes=60)
+        raw_all = infer_preictal_interactal(raw_all, post_buffer_minutes=60, pre_buffer_minutes=45, preictal_minutes=15)
 
         if plot_psd:
             spectrum = raw_all.compute_psd()
