@@ -538,27 +538,6 @@ Modify `ResultsProcessor._process_outer_fold()` in `analyze_results2.py` to add 
 
 ---
 
-## Citation
-
-If you use this code, please cite:
-
-```bibtex
-@article{your_paper,
-  title={Cross-Patient Seizure Prediction via Dynamic Multi-Graph Convolution and Channel-Weighted Transformer},
-  author={Your Names},
-  journal={Your Journal},
-  year={2024}
-}
-```
-
----
-
-## License
-
-[Your License Here]
-
----
-
 ## Contributing
 
 Contributions are welcome! Please:
