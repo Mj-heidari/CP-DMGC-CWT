@@ -98,7 +98,7 @@ def process_chbmit_bids_dataset(
     apply_ica : bool, optional
         If True, apply ICA to remove artifacts.
         Default is True.
-    apply_downsampling : bool, optional 
+    apply_downsampling : bool, optional
         If True, downsample the data to sfreq_new.
         Default is True.
     filter_type : str, optional
@@ -141,7 +141,7 @@ def process_chbmit_bids_dataset(
     post_buffer_minutes : int, optional
         Postictal buffer duration in minutes.
         Default is 60 minutes.
-    pre_buffer_minutes : int, optional 
+    pre_buffer_minutes : int, optional
         Interictal buffer duration in minutes.
         Default is 45 minutes.
     segment_sec : int, optional
@@ -310,9 +310,7 @@ def process_chbmit_bids_dataset(
             )
 
         # save options into a text file
-        options_file = os.path.join(
-            session_path, f"eeg/processing_options{suffix}.txt"
-        )
+        options_file = os.path.join(session_path, f"eeg/processing_options{suffix}.txt")
         with open(options_file, "w") as f:
             f.write("Creation Time:\n")
             f.write(f"{time.ctime()}\n\n")
@@ -333,25 +331,43 @@ def process_chbmit_bids_dataset(
             f.write(f"preictal_minutes: {preictal_minutes}\n")
             f.write(f"post_buffer_minutes: {post_buffer_minutes}\n")
             f.write(f"pre_buffer_minutes: {pre_buffer_minutes}\n")
-        print(f"Saved processed segments to {session_path}/eeg/processed_segments{suffix}_*.npz\n")
+        print(
+            f"Saved processed segments to {session_path}/eeg/processed_segments{suffix}_*.npz\n"
+        )
 
 
 def build_subject_summary_from_event_stats(dataset_dir: str):
     """
     Build subject-level summary using per-session event_stats.csv files.
-    Avoids rerunning the whole pipeline.
 
-    Parameters
-    ----------
-    dataset_dir : str
-        Path to dataset root (contains chb01, chb02, ...).
+    Tracks counts, segments, and durations for:
+    - interictal
+    - pre_buffer
+    - preictal
+    - post_buffer
+    - seizure
+
+    Saves the summary as `subject_summary.csv` in the dataset root.
     """
+
     subj_stats = defaultdict(
         lambda: {
+            # event counts
             "n_preictal_events": 0,
             "n_interictal_events": 0,
+            "n_pre_buffer_events": 0,
+            "n_post_buffer_events": 0,
+            "n_seizure_events": 0,
+            # segment totals
             "n_preictal_segments": 0,
             "n_interictal_segments": 0,
+            "n_pre_buffer_segments": 0,
+            "n_post_buffer_segments": 0,
+            "n_seizure_segments": 0,
+            # durations
+            "total_pre_buffer_duration": 0.0,
+            "total_post_buffer_duration": 0.0,
+            "total_seizure_duration": 0.0,
         }
     )
 
@@ -362,42 +378,98 @@ def build_subject_summary_from_event_stats(dataset_dir: str):
 
     if not event_stat_files:
         print("No event_stats.csv files found. Run the pipeline first.")
-        return
+        return {}
 
     for stats_file in event_stat_files:
-        subj_id = stats_file.split(os.sep)[-4].split("-")[-1]  # e.g., chb01 -> "01"
-        print(subj_id)
+        # subject folder name → extract subject ID (e.g., chb01 → "01")
+        subj_id = stats_file.split(os.sep)[-4].split("-")[-1]
+
         with open(stats_file, "r") as f:
             reader = csv.DictReader(f)
+
             for row in reader:
                 label = row["label"]
+                duration = float(row["duration_sec"])
                 n_segments = int(row["n_segments"])
 
-                if label == "preictal":
-                    subj_stats[subj_id]["n_preictal_events"] += 1
-                    subj_stats[subj_id]["n_preictal_segments"] += n_segments
-                elif label == "interictal":
-                    subj_stats[subj_id]["n_interictal_events"] += 1
-                    subj_stats[subj_id]["n_interictal_segments"] += n_segments
+                st = subj_stats[subj_id]
 
-    # save subject-level summary
-    summary_file = os.path.join(dataset_dir, "subject_summary.csv")
-    with open(summary_file, "w", newline="") as f:
-        writer = csv.DictWriter(
-            f,
-            fieldnames=[
-                "subject_id",
-                "n_preictal_events",
-                "n_interictal_events",
-                "n_preictal_segments",
-                "n_interictal_segments",
-            ],
+                if label == "preictal":
+                    st["n_preictal_events"] += 1
+                    st["n_preictal_segments"] += n_segments
+
+                elif label == "interictal":
+                    st["n_interictal_events"] += 1
+                    st["n_interictal_segments"] += n_segments
+
+                elif label == "pre_buffer":
+                    st["n_pre_buffer_events"] += 1
+                    st["n_pre_buffer_segments"] += n_segments
+                    st["total_pre_buffer_duration"] += duration
+
+                elif label == "post_buffer":
+                    st["n_post_buffer_events"] += 1
+                    st["n_post_buffer_segments"] += n_segments
+                    st["total_post_buffer_duration"] += duration
+
+                elif label == "seizure":
+                    st["n_seizure_events"] += 1
+                    st["n_seizure_segments"] += n_segments
+                    st["total_seizure_duration"] += duration
+
+    # compute mean durations
+    for sid, st in subj_stats.items():
+        st["mean_pre_buffer_duration"] = (
+            st["total_pre_buffer_duration"] / st["n_pre_buffer_events"]
+            if st["n_pre_buffer_events"] > 0
+            else 0.0
         )
+
+        st["mean_post_buffer_duration"] = (
+            st["total_post_buffer_duration"] / st["n_post_buffer_events"]
+            if st["n_post_buffer_events"] > 0
+            else 0.0
+        )
+
+        st["mean_seizure_duration"] = (
+            st["total_seizure_duration"] / st["n_seizure_events"]
+            if st["n_seizure_events"] > 0
+            else 0.0
+        )
+
+    # -------------------------
+    # save subject-level summary
+    # -------------------------
+    summary_file = os.path.join(dataset_dir, "subject_summary.csv")
+    fieldnames = [
+        "subject_id",
+        "n_preictal_events",
+        "n_interictal_events",
+        "n_pre_buffer_events",
+        "n_post_buffer_events",
+        "n_seizure_events",
+        "n_preictal_segments",
+        "n_interictal_segments",
+        "n_pre_buffer_segments",
+        "n_post_buffer_segments",
+        "n_seizure_segments",
+        "total_pre_buffer_duration",
+        "total_post_buffer_duration",
+        "total_seizure_duration",
+        "mean_pre_buffer_duration",
+        "mean_post_buffer_duration",
+        "mean_seizure_duration",
+    ]
+
+    with open(summary_file, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         for subj_id, stats in sorted(subj_stats.items()):
             writer.writerow({"subject_id": subj_id, **stats})
 
     print(f"Saved subject-level summary to {summary_file}")
+
+    return subj_stats
 
 
 def parse_args():
