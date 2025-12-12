@@ -123,3 +123,119 @@ python dataset/preprocess.py \
 
 Produces a file like:
 processed_segments_ifd_5s_szx5_prex5_float.npz
+
+# EEG Dataset Loader and MIL Utilities
+
+- CHBMITDataset: Loads preprocessed EEG data (.npz) for a subject and provides labels, group IDs, and metadata.
+- SubsetWithInfo: Subsets the dataset while maintaining labels, group IDs, and metadata.
+- UnderSampledDataLoader: Custom dataloader that balances preictal (or seizure) vs. interictal (or non-seizure) samples each epoch.
+- MilDataloader: Creates MIL-style bags from the dataset for weakly-supervised training.
+
+- Cross-validation utilities: 
+  - Leave-One-Out (LOO) based on seizure events.
+  - Stratified or per-event K-Fold splitting with flexible modes (random_split, split, strata, per_event_strata).
+
+- Metadata for each sample is preserved and returned in dataloaders.
+
+## Usage
+```python
+from dataset import CHBMITDataset
+
+ds = CHBMITDataset(
+    dataset_dir="data/BIDS_CHB-MIT",
+    subject_id="01",
+    task="prediction",  # or "detection"
+    suffix="fd_5s_szx5_prex5",
+)
+print(f"Total samples: {len(ds)}")
+print(f"X shape: {ds.X.shape}")
+print(f"y distribution: {np.bincount(ds.y)}") 
+# 0=interictal, 1=preictal/seizure 
+```
+Each sample returns a tuple (x, y, meta):
+```python
+x, y, meta = ds[0]
+print(x.shape)  # EEG features
+print(y)        # label (0 or 1)
+print(meta)     # metadata dict
+```
+Metadata fields:
+
+- `event_id`: ID of the seizure or preictal event.
+- `global_epoch_id`: the unique chronological ID of the segment
+- `epoch_index_within_event`: position within the event.
+- `n_segments_in_event`: number of segments in the event the segment belongs to.
+- `augmented`: flag the segment if it is an augmented segment.
+- `onset_sec` & `duration_sec`: timing information.
+- Plus other fields like: `pp_mean`, `pp_max`, `sd_mean`, `sd_max`.
+
+## Create Subset
+```python
+from torch.utils.data import Subset
+from dataset import SubsetWithInfo
+
+subset = SubsetWithInfo(ds, indices=[0, 1, 2, 3])
+print(subset.y)        # subset labels
+print(subset.group_ids) # subset group IDs
+print(subset.metadata)  # subset metadata
+```
+## Use UnderSampledDataLoader
+Balances preictal/seizure and interictal/non-seizure samples each epoch.
+```python
+from dataset import UnderSampledDataLoader
+
+dataloader = UnderSampledDataLoader(subset, batch_size=16)
+
+for batch_data, batch_labels, batch_metas in dataloader:
+    print(batch_data.shape)   # [batch_size, channels, time]
+    print(batch_labels)       # labels
+    print(batch_metas)        # list of dicts for each instance
+```
+- Bags differ every epoch due to random undersampling.
+- `batch_metas` is a list of dictionaries corresponding to each sample in the batch.
+
+## Use MilDataloader for MIL
+Creates random bags of size `bag_size` for MIL training.
+```python
+from dataset import MilDataloader
+
+mil_loader = MilDataloader(subset, batch_size=4, bag_size=8)
+
+for bag_data, bag_labels, bag_metas in mil_loader:
+    print(bag_data.shape)   # [batch_size, bag_size, channels, time]
+    print(bag_labels)       # labels for each bag (0 or 1)
+    print(bag_metas)        # list of lists: metadata for each instance in bag
+```
+- Each bag contains bag_size instances.
+- bag_metas[i] is a list of metadata dictionaries for the i-th bag.
+- Bags are reshuffled every epoch.
+
+## Cross-validation splitters
+### K-Fold CV:
+```python
+from dataset import make_cv_splitter
+
+n_folds = 5
+cv_splits, _ = make_cv_splitter(ds, method="KFold", n_fold=n_folds, shuffle=True, mode="strata")
+
+for fold_idx, (train_set, val_set) in enumerate(cv_splits):
+    print(f"Fold {fold_idx}:")
+    print(f"  Train samples: {len(train_set)}, Validation samples: {len(val_set)}")
+```
+### Leave-One-Out CV:
+```python 
+from dataset import make_cv_splitter
+
+loo_splits, _ = make_cv_splitter(ds, method="LOO", shuffle=True)
+
+for train_set, test_set in loo_splits:
+    print(f"Train: {len(train_set)}, Test: {len(test_set)}")
+```
+### CV Notes:
+- Supports multiple modes for K-Fold:
+  - "random_split": random split per class
+  - "split": chronological split
+  - "strata": stratified split per class
+  - "per_event_strata": stratified within each seizure/interictal event
+- Handles interictal and preictal/seizure samples separately.
+- Ensures temporal integrity for time-series data.
